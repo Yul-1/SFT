@@ -2,6 +2,7 @@
 // Modulo C sicuro per accelerazione crittografica
 // Compilare con:
 // gcc -shared -fPIC -O3 -march=native -D_FORTIFY_SOURCE=2 -fstack-protector-strong crypto_accelerator_fixed.c -o crypto_accelerator.so -lcrypto
+// Su Windows, usare setup.py
 
 #include <Python.h>
 #include <openssl/evp.h>
@@ -176,7 +177,7 @@ static PyObject* aes_gcm_encrypt_safe(PyObject* self, PyObject* args) {
 
     result = PyTuple_Pack(2, py_ciphertext, py_tag);
     Py_XDECREF(py_ciphertext);
-    Py_XDECREF(py_tag);
+    Py_XDEDECREF(py_tag);
 
 cleanup: 
     if (ctx) { 
@@ -378,21 +379,15 @@ PyMODINIT_FUNC PyInit_crypto_accelerator(void) {
     // Inizializza OpenSSL in modo sicuro
     OpenSSL_add_all_algorithms();
     
-    // 🟢 CORREZIONE: Inizializzazione Random Fallback
+    // 🟢 CORREZIONE (Porting Windows): 
+    // Rimosso il fallback manuale /dev/urandom.
+    // Le build moderne di OpenSSL (specialmente su Windows)
+    // gestiscono il seeding automatico usando le API del sistema operativo.
     if (RAND_status() != 1) {
-        unsigned char seed[32];
-        FILE *urandom = fopen("/dev/urandom", "rb"); // Tenta di leggere da /dev/urandom
-        if (urandom) {
-            if (fread(seed, 1, sizeof(seed), urandom) == sizeof(seed)) {
-                RAND_seed(seed, sizeof(seed));
-                fprintf(stderr, "WARNING: OpenSSL PRNG manually seeded from /dev/urandom\n");
-            }
-            fclose(urandom);
-        } else {
-            // Log critico in caso di fallimento completo
-            fprintf(stderr, "CRITICAL ERROR: OpenSSL PRNG not seeded and /dev/urandom not available. System might be insecure.\n");
-        }
-        secure_memzero(seed, sizeof(seed));
+        // Logghiamo solo un avviso critico se il PRNG non è pronto.
+        fprintf(stderr, "CRITICAL WARNING: OpenSSL PRNG not seeded automatically. "
+                        "Il sistema potrebbe essere insicuro.\n");
+        // Non tentiamo di fare il seeding manuale da un percorso non portabile.
     }
 
     return PyModule_Create(&cryptomodule);

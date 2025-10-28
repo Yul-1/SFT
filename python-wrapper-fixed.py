@@ -12,9 +12,7 @@ import secrets
 import time
 import logging
 import threading
-import subprocess
-import platform
-import sysconfig
+# 🟢 CORREZIONE: Rimossi import non più necessari per la compilazione inline
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives import hashes
@@ -274,49 +272,9 @@ class SecureCrypto:
         return hmac.compare_digest(a, b)
 
 
-def compile_c_module():
-    """Compila il modulo C con flag di sicurezza (DoS/Stack-smashing)"""
-    print("Attempting to compile C module...")
-    
-    # Assumiamo che il file C sia nominato 'crypto-accelerator-fixed.c' e lo rinominiamo temporaneamente
-    c_file_name = "crypto-accelerator-fixed.c"
-    
-    # Trova il percorso corretto per Python.h
-    include_path = sysconfig.get_path('include')
+# 🟢 CORREZIONE: Rimossa l'intera funzione 'compile_c_module'
+# La compilazione è ora gestita da 'setup.py'
 
-    compile_cmd = [
-        "gcc", "-shared", "-fPIC", "-O3", 
-        f"-I{include_path}",
-        "-march=native", 
-        "-D_FORTIFY_SOURCE=2", 
-        "-fstack-protector-strong",
-        "-Wl,-z,relro,-z,now", # Hardenings per Linux/ELF
-        c_file_name, 
-        "-o", "crypto_accelerator.so",
-        "-lcrypto",
-    ]
-    
-    if platform.system() == "Darwin":
-        compile_cmd[0] = "clang"
-        compile_cmd[1] = "-dynamiclib"
-        compile_cmd[-2] = "crypto_accelerator.dylib"
-        # Rimuovi flag non supportati
-        compile_cmd = [c for c in compile_cmd if not c.startswith("-Wl,-z")]
-
-    elif platform.system() == "Windows":
-        print("Windows compilation requires Visual Studio, skipping compilation.")
-        return False
-        
-    try:
-        result = subprocess.run(compile_cmd, capture_output=True, text=True)
-        if result.returncode != 0:
-            print(f"Compilation failed:\n{result.stderr}")
-            return False
-        print(f"✓ C module compiled successfully as {compile_cmd[-2]}")
-        return True
-    except FileNotFoundError:
-        print("GCC/Clang not found. Please install build tools.")
-        return False
 
 # Test/benchmark helpers (unchanged logic, safe)
 def test_integration():
@@ -390,12 +348,14 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Secure Crypto Wrapper')
     parser.add_argument('--test', action='store_true', help='Run integration tests')
     parser.add_argument('--benchmark', action='store_true', help='Run benchmark')
-    parser.add_argument('--compile', action='store_true', help='Compile C module')
+    # 🟢 CORREZIONE: Argomento --compile rimosso
     
     args = parser.parse_args()
-    
-    if args.compile:
-        compile_c_module()
+
+    if not C_MODULE_AVAILABLE:
+        logger.warning("C module not found or failed to import.")
+        logger.warning("Please build it using: python setup.py build_ext --inplace")
+        logger.warning("Running in Python-only fallback mode.")
     
     if args.test:
         test_integration()
@@ -403,5 +363,7 @@ if __name__ == "__main__":
     if args.benchmark:
         benchmark_comparison()
 
-    if not args.compile and not args.test and not args.benchmark:
-        logger.info("Secure Crypto Wrapper loaded. Run with --compile, --test, or --benchmark.")
+    if not args.test and not args.benchmark:
+        logger.info("Secure Crypto Wrapper loaded. Run with --test or --benchmark.")
+        if not C_MODULE_AVAILABLE:
+             logger.error("Build the C module first!")
