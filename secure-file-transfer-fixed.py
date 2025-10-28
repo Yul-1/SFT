@@ -567,7 +567,7 @@ class SecureFileTransferNode:
                 header = self._recv_all(self.HEADER_PACKET_SIZE)
                 if not header: break
 
-                # 2.2. Estrai la lunghezza del payload per ricevere l'intero pacchetto
+                # 2.2. Estrai la lunghezza del payload...
                 _, _, payload_len, *_ = struct.unpack('!4sII16s12s16s', header)
                 
                 if payload_len > MAX_PACKET_SIZE:
@@ -584,8 +584,16 @@ class SecureFileTransferNode:
 
                 if message:
                     logger.info(f"[{thread_name}] Received message type: {message['type']}")
-                    # Qui la logica di gestione file/ping/rotazione chiavi
-                    # ...
+                    
+                    if message['type'] == 'ping':
+                        logger.info(f"[{thread_name}] Responding with PONG.")
+                        try:
+                            pong_packet = self.protocol.create_packet('pong', {})
+                            self.peer_socket.sendall(pong_packet)
+                        except Exception as e:
+                            logger.error(f"[{thread_name}] Failed to send PONG: {e}")
+                            break # Interrompi se l'invio fallisce
+                    # Qui la logica di gestione file/rotazione chiavi
 
             logger.info(f"[{thread_name}] Connection closed gracefully.")
 
@@ -607,6 +615,10 @@ class SecureFileTransferNode:
         try:
             # Genera la chiave di sessione iniziale dopo l'handshake
             self.key_manager.generate_session_key()
+            
+            logger.info(f"[{thread_name}] Sending initial PING to server...")
+            ping_packet = self.protocol.create_packet('ping', {})
+            self.peer_socket.sendall(ping_packet)
             
             # Loop di comunicazione (preso da _handle_connection)
             while self.running:
@@ -631,6 +643,12 @@ class SecureFileTransferNode:
 
                 if message:
                     logger.info(f"[{thread_name}] Received message type: {message['type']}")
+                    
+                    if message['type'] == 'pong':
+                        logger.info(f"[{thread_name}] Server responded with PONG. Connection active.")
+                        # In un'app reale, qui potremmo inviare il file
+                        # Per ora, chiudiamo la connessione dopo il test
+                        self.running = False 
                     # ... (Futura logica client qui)
 
             logger.info(f"[{thread_name}] Connection closed gracefully.")
