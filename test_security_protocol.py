@@ -135,7 +135,28 @@ def test_replay_attack_detection(secure_server):
         # Dobbiamo leggere l'header + il payload del pong
         header_bytes = sock.recv(HEADER_PACKET_SIZE)
         assert header_bytes, "Il server non ha risposto al primo ping"
-        
+
+        # --- 🛠️ CORREZIONE INIZIA ---
+        # Dobbiamo leggere anche il payload del PONG per svuotare il buffer
+        # Estrai la lunghezza del payload dall'header
+        try:
+            _magic, _ver, payload_len, *_ = struct.unpack('!4sII16s12s16s', header_bytes)
+        except struct.error:
+            pytest.fail("Il server ha inviato un header PONG malformato")
+
+        # Leggi e scarta il payload
+        if payload_len > 0:
+            # È possibile che recv() restituisca meno byte, quindi loop
+            bytes_letti = 0
+            while bytes_letti < payload_len:
+                chunk = sock.recv(payload_len - bytes_letti)
+                if not chunk:
+                    pytest.fail("Connessione chiusa dal server durante la lettura del payload PONG")
+                bytes_letti += len(chunk)
+
+        print(f"Buffer PONG (Header + {payload_len} bytes di payload) svuotato.")
+        # --- 🛠️ CORREZIONE FINISCE ---
+
         # Ora, invia DI NUOVO lo stesso identico pacchetto
         print("Invio pacchetto replay...")
         sock.sendall(valid_packet)
