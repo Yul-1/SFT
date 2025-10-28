@@ -246,7 +246,7 @@ class SecureKeyManager:
 
             return self.shared_secret
             
-def _derive_shared_secret(self, secret: bytes):
+    def _derive_shared_secret(self, secret: bytes):
         """Deriva la chiave HMAC E la chiave AES (Key-Split) dal segreto scambiato"""
         kdf = PBKDF2HMAC(
             algorithm=hashes.SHA256(),
