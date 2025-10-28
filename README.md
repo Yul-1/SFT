@@ -1,151 +1,268 @@
-# AegisTransfer (SFT)
+AegisTransfer (SFT)
 
-[![Python Version](https://img.shields.io/badge/python-3.9%2B-blue)](https://www.python.org/)
-[![Build Status](https://img.shields.io/badge/build-passing-brightgreen)](https://github.com/Yul-1/SFT)
-[![Security](https://img.shields.io/badge/security-hardened-blueviolet)](https://github.com/Yul-1/SFT)
-[![License](https://img.shields.io/badge/license-MIT-green)](https://github.com/Yul-1/SFT/blob/main/LICENSE)
+AegisTransfer è un sistema di trasferimento file sicuro (Secure File Transfer - SFT) client-server ad alte prestazioni. È progettato da zero con un'architettura "security-first", combinando la velocità della crittografia C (via OpenSSL) con la sicurezza e la flessibilità di Python.
 
-**AegisTransfer** è un sistema di trasferimento file sicuro (Secure File Transfer - SFT) client-server ad alte prestazioni. È progettato da zero con un'architettura "security-first", combinando la velocità della crittografia C (via OpenSSL) con la sicurezza e la flessibilità di Python.
+Il sistema utilizza un modulo di accelerazione C per operazioni crittografiche intensive, ma include un fallback trasparente a un'implementazione Python pura (cryptography) nel caso in cui il modulo C non sia compilato o non sia disponibile, garantendo la portabilità.
 
-[cite_start]Il sistema utilizza un modulo di accelerazione C per operazioni crittografiche intensive [cite: 133][cite_start], ma include un **fallback trasparente** a un'implementazione Python pura (`cryptography`) [cite: 3, 8] nel caso in cui il modulo C non sia compilato o non sia disponibile, garantendo la portabilità.
+Indice
 
-## Indice
+Perché AegisTransfer?
 
-1.  [Perché AegisTransfer?](#perché-aegistransfer)
-2.  [Architettura del Sistema](#architettura-del-sistema)
-3.  [Caratteristiche di Sicurezza](#caratteristiche-di-sicurezza-dettagliate)
-4.  [Installazione e Build (Ubuntu/Debian)](#installazione-e-build-ubuntudebian)
-5.  [Utilizzo](#utilizzo)
-6.  [Roadmap (Sviluppo Futuro)](#roadmap-sviluppo-futuro)
+Architettura del Sistema
 
-## Perché AegisTransfer?
+Caratteristiche di Sicurezza
+
+Requisiti
+
+Installazione e Build
+
+Branch main (Linux - Build Semplice)
+
+Branch Porting (Windows/Linux - Build setup.py)
+
+Testing
+
+Utilizzo
+
+Roadmap (Sviluppo Futuro)
+
+Perché AegisTransfer?
 
 Mentre esistono protocolli come SCP o SFTP, questo progetto serve come studio approfondito sull'implementazione di software sicuro a più livelli. L'obiettivo primario è mitigare le vulnerabilità comuni a livello di protocollo, rete e implementazione.
 
-* [cite_start]**Performance:** Le operazioni crittografiche (AES-GCM) sono delegate a C/OpenSSL compilato[cite: 146, 169], riducendo drasticamente il carico sulla CPU rispetto a Python puro.
-* [cite_start]**Robustezza:** Il sistema è protetto contro attacchi DoS [cite: 49, 105][cite_start], replay attacks [cite: 87, 92] [cite_start]e timing attacks[cite: 31, 202].
-* [cite_start]**Sicurezza della Memoria:** Particolare attenzione è data alla pulizia sicura dei dati sensibili (come chiavi e buffer) dalla memoria[cite: 4, 135, 167, 188].
+Performance: Le operazioni crittografiche (AES-GCM) sono delegate a C/OpenSSL compilato [cite: crypto-accelerator-fixed.c], riducendo drasticamente il carico sulla CPU rispetto a Python puro.
 
-## Architettura del Sistema
+Robustezza: Il sistema è protetto contro attacchi DoS [cite: secure-file-transfer-fixed.py], replay attacks [cite: secure-file-transfer-fixed.py] e timing attacks [cite: crypto-accelerator-fixed.c, python-wrapper-fixed.py].
+
+Sicurezza della Memoria: Particolare attenzione è data alla pulizia sicura dei dati sensibili (come chiavi e buffer) dalla memoria [cite: crypto-accelerator-fixed.c, python-wrapper-fixed.py].
+
+Architettura del Sistema
 
 Il progetto è diviso in tre layer logici che interagiscono tra loro:
 
-1.  **Livello Protocollo (Python) - `secure-file-transfer-fixed.txt`**
-    È il "cervello" dell'applicazione. [cite_start]Gestisce la logica di rete (TCP server/client) [cite: 114][cite_start], implementa il protocollo di handshake (scambio di chiavi RSA-OAEP) [cite: 64, 95] e gestisce la logica di trasferimento. [cite_start]È responsabile dell'applicazione delle contromisure di sicurezza a livello di rete, come il rate-limiting [cite: 72] [cite_start]e la protezione anti-replay[cite: 92].
+Livello Protocollo (Python) - secure-file-transfer-fixed.py
+È il "cervello" dell'applicazione. Gestisce la logica di rete (TCP server/client), implementa il protocollo di handshake (scambio di chiavi RSA-OAEP) e gestisce la logica di trasferimento. È responsabile dell'applicazione delle contromisure di sicurezza a livello di rete, come il rate-limiting e la protezione anti-replay [cite: secure-file-transfer-fixed.py].
 
-2.  **Livello Wrapper (Python) - `python-wrapper-fixed.txt`**
-    È il "ponte" flessibile. [cite_start]Fornisce una classe `SecureCrypto` [cite: 7] che funge da API unificata per il resto dell'applicazione. [cite_start]Al momento dell'inizializzazione, tenta di importare il modulo C compilato (`crypto_accelerator`)[cite: 1]. [cite_start]In caso di fallimento (es. `ImportError`), attiva un flag e utilizza implementazioni di fallback pure-Python (usando la libreria `cryptography`) per tutte le operazioni[cite: 3, 25].
+Livello Wrapper (Python) - python-wrapper-fixed.py
+È il "ponte" flessibile. Fornisce una classe SecureCrypto che funge da API unificata per il resto dell'applicazione. Al momento dell'inizializzazione, tenta di importare il modulo C compilato (crypto_accelerator). In caso di fallimento (es. ImportError), attiva un flag e utilizza implementazioni di fallback pure-Python (usando la libreria cryptography) per tutte le operazioni [cite: python-wrapper-fixed.py].
 
-3.  **Livello Core (C) - `crypto-accelerator-fixed.txt`**
-    È il "motore" ad alte prestazioni. [cite_start]Si tratta di un'estensione Python C [cite: 207] che espone funzioni OpenSSL ottimizzate. Gestisce le operazioni CPU-intensive:
-    * [cite_start]Cifratura e Decifratura AES-256-GCM[cite: 146, 169].
-    * [cite_start]Generazione di byte casuali sicuri (`RAND_bytes`)[cite: 143].
-    * [cite_start]Confronto a tempo costante (`CRYPTO_memcmp`)[cite: 202].
+Livello Core (C) - crypto-accelerator-fixed.c
+È il "motore" ad alte prestazioni. Si tratta di un'estensione Python C che espone funzioni OpenSSL ottimizzate. Gestisce le operazioni CPU-intensive:
 
-## Caratteristiche di Sicurezza Dettagliate
+Cifratura e Decifratura AES-256-GCM.
+
+Generazione di byte casuali sicuri (RAND_bytes).
+
+Confronto a tempo costante (CRYPTO_memcmp).
+
+Caratteristiche di Sicurezza Dettagliate
 
 Questo sistema implementa un'ampia gamma di contromisure di sicurezza:
 
-### Crittografia e Autenticazione
+Crittografia e Autenticazione
 
-* [cite_start]**Cifratura Dati (C):** AES-256-GCM tramite OpenSSL[cite: 154, 180].
-* [cite_start]**Cifratura Dati (Fallback Python):** AES-256-GCM tramite `cryptography`[cite: 26, 30].
-* [cite_start]**Handshake Sicuro:** Scambio di un segreto condiviso utilizzando RSA-4096 con padding OAEP (SHA-256)[cite: 64, 67].
-* **Autenticazione Messaggi:**
-    1.  [cite_start]**HMAC:** Tutti i pacchetti JSON sono firmati con HMAC-SHA256 [cite: 71, 89] [cite_start](la cui chiave è derivata dal segreto condiviso tramite PBKDF2 [cite: 69]).
-    2.  [cite_start]**GCM Tag:** L'autenticità del ciphertext è garantita dal GCM Authentication Tag[cite: 26, 76].
+Cifratura Dati (C): AES-256-GCM tramite OpenSSL [cite: crypto-accelerator-fixed.c].
 
-### Protezione Denial of Service (DoS)
+Cifratura Dati (Fallback Python): AES-256-GCM tramite cryptography [cite: python-wrapper-fixed.py].
 
-* [cite_start]**Rate Limiting:** Un `RateLimiter` [cite: 49] [cite_start]basato su client ID (IP) previene attacchi "brute force" o "spam" di pacchetti, bloccando richieste che superano una soglia definita[cite: 84].
-* [cite_start]**Limite Connessioni Globale:** Il server limita il numero massimo di connessioni globali e thread attivi (`MAX_GLOBAL_CONNECTIONS`) [cite: 45, 118][cite_start], agendo come un *circuit breaker* per prevenire l'esaurimento delle risorse[cite: 105].
-* **Validazione Dimensione Pacchetti:**
-    * [cite_start]A livello di protocollo, la lunghezza del payload letta dall'header è validata contro `MAX_PACKET_SIZE` *prima* di allocare memoria[cite: 86, 109].
-    * [cite_start]A livello C, tutti i buffer (plaintext, ciphertext) sono validati contro `MAX_BUFFER_SIZE` (10MB) per prevenire allocazioni eccessive[cite: 137, 151, 175].
-* [cite_start]**Timeout Socket:** Tutti i socket hanno un timeout (`SOCKET_TIMEOUT`) [cite: 45] [cite_start]per prevenire attacchi "slowloris" o connessioni appese[cite: 102].
+Handshake Sicuro: Scambio di un segreto condiviso utilizzando RSA-4096 con padding OAEP (SHA-256) [cite: secure-file-transfer-fixed.py].
 
-### Protezione Anti-Replay
+Autenticazione Messaggi:
 
-* **Timestamp:** Ogni pacchetto include un timestamp. [cite_start]Il server rifiuta pacchetti con timestamp troppo vecchi (tolleranza di 5 minuti)[cite: 91].
-* [cite_start]**Message ID Unici:** Il server mantiene una `deque` (una coda FIFO a dimensione fissa [cite: 94]) degli hash dei messaggi ricevuti. [cite_start]Se un hash viene ricevuto una seconda volta, è considerato un attacco replay e scartato[cite: 87, 92].
+HMAC: Tutti i pacchetti JSON sono firmati con HMAC-SHA256 (la cui chiave è derivata dal segreto condiviso tramite PBKDF2) [cite: secure-file-transfer-fixed.py].
 
-### Protezione Vulnerabilità Software
+GCM Tag: L'autenticità del ciphertext è garantita dal GCM Authentication Tag [cite: crypto-accelerator-fixed.c].
 
-* **Timing Attacks:**
-    * [cite_start]La verifica delle firme HMAC in Python usa `hmac.compare_digest`[cite: 31].
-    * [cite_start]La verifica nel modulo C usa `CRYPTO_memcmp` di OpenSSL[cite: 202]. Entrambe sono funzioni a tempo costante.
-* **Gestione Sicura della Memoria:**
-    * [cite_start]Il modulo C utilizza `secure_memzero` (o `explicit_bzero` se disponibile) [cite: 135] [cite_start]per cancellare chiavi, IV e buffer di plaintext/ciphertext *dopo l'uso*[cite: 167, 188].
-    * [cite_start]Il wrapper Python usa una funzione `_clear_memory` [cite: 4, 46] [cite_start]per cancellare (best-effort) le chiavi dalla memoria (es. nella cache LRU [cite: 19, 22] [cite_start]e durante lo shutdown [cite: 125]).
-* [cite_start]**Hardening di Compilazione:** Il modulo C è compilato (su Linux) con flag di sicurezza moderni per mitigare buffer overflow e altre vulnerabilità a livello binario (`-fstack-protector-strong`, `-D_FORTIFY_SOURCE=2`, `-Wl,-z,relro,-z,now`)[cite: 33].
-* [cite_start]**Path Traversal:** I nomi dei file ricevuti sono rigorosamente sanitizzati (rimozione di `..`, caratteri speciali, ecc.) prima di qualsiasi operazione su disco[cite: 72, 73].
+Protezione Denial of Service (DoS)
 
-## Installazione e Build (Ubuntu/Debian)
+Rate Limiting: Un RateLimiter basato su client ID (IP) previene attacchi "brute force" o "spam" di pacchetti [cite: secure-file-transfer-fixed.py].
 
-Questo progetto richiede `python3-dev` (per gli header CPython), `build-essential` (per GCC) e `libssl-dev` (per gli header OpenSSL).
+Limite Connessioni Globale: Il server limita il numero massimo di connessioni globali e thread attivi (MAX_GLOBAL_CONNECTIONS) [cite: secure-file-transfer-fixed.py].
 
-1.  **Clona il Repository:**
-    ```bash
-    git clone [https://github.com/Yul-1/SFT.git](https://github.com/Yul-1/SFT.git)
-    cd SFT
-    ```
+Validazione Dimensione Pacchetti: Sia a livello di protocollo Python [cite: secure-file-transfer-fixed.py] che a livello C [cite: crypto-accelerator-fixed.c] viene validata la dimensione dei pacchetti prima di allocare memoria.
 
-2.  **Installa Dipendenze di Sistema e Python:**
-    ```bash
-    # Dipendenze per la compilazione C
-    sudo apt update
-    sudo apt install -y python3-dev build-essential libssl-dev python3-pip
+Timeout Socket: Tutti i socket hanno un timeout (SOCKET_TIMEOUT) per prevenire attacchi "slowloris" [cite: secure-file-transfer-fixed.py].
 
-    # Dipendenze Python (per fallback e validazione)
-    pip install cryptography jsonschema
-    ```
+Protezione Anti-Replay
 
-3.  **Compila il Modulo C:**
-    Il wrapper Python include un comodo script di compilazione.
-    ```bash
-    python3 python-wrapper-fixed.py --compile
-    ```
-    Se l'operazione ha successo, vedrai: `✓ C module compiled successfully as crypto_accelerator.so`
+Timestamp: Il server rifiuta pacchetti con timestamp troppo vecchi [cite: secure-file-transfer-fixed.py].
 
-4.  **Verifica (Test Locale):**
-    Esegui i test di integrazione del wrapper. Questo verificherà che il modulo C sia caricato correttamente E che il fallback Python funzioni.
-    ```bash
-    python3 python-wrapper-fixed.py --test
-    ```
+Message ID Unici: Il server mantiene una deque (coda a dimensione fissa) degli hash dei messaggi ricevuti e scarta i duplicati [cite: secure-file-transfer-fixed.py].
 
-## Utilizzo
+Protezione Vulnerabilità Software
 
-### 🖥️ Avviare il Server
+Timing Attacks: Le firme HMAC sono verificate usando hmac.compare_digest in Python [cite: python-wrapper-fixed.py] e CRYPTO_memcmp in C [cite: crypto-accelerator-fixed.c].
 
-Il server si mette in ascolto sull'host e la porta specificati (default: `0.0.0.0:5555`).
+Gestione Sicura della Memoria: Il modulo C utilizza secure_memzero [cite: crypto-accelerator-fixed.c] per cancellare i buffer temporanei. Il wrapper Python pulisce (best-effort) le chiavi dalla memoria [cite: python-wrapper-fixed.py].
 
-```bash
+Hardening di Compilazione: Il modulo C è compilato con flag di sicurezza moderni (-fstack-protector-strong, -D_FORTIFY_SOURCE=2, ecc.) [cite: python-wrapper-fixed.py].
+
+Path Traversal: I nomi dei file sono rigorosamente sanitizzati [cite: secure-file-transfer-fixed.py].
+
+📋 Requisiti
+
+Crea un file requirements.txt con il seguente contenuto e installalo (pip install -r requirements.txt):
+
+cryptography
+jsonschema
+setuptools
+
+
+🛠️ Installazione e Build
+
+Questo progetto ha due sistemi di build a seconda del branch. Segui le istruzioni corrette per il tuo ambiente.
+
+🐧 Branch main (Linux - Build Semplice)
+
+Questo branch (main) è ottimizzato per Linux (Ubuntu/Debian) e utilizza uno script di compilazione integrato in python-wrapper-fixed.py.
+
+Installa Dipendenze di Sistema:
+
+sudo apt update
+sudo apt install -y python3-dev build-essential libssl-dev python3-pip
+
+
+Crea Venv e Installa Requisiti:
+
+python3 -m venv venv
+source venv/bin/activate
+pip install -r requirements.txt
+
+
+Compila il Modulo C:
+Usa lo script di compilazione integrato nel wrapper [cite: python-wrapper-fixed.py].
+
+python3 python-wrapper-fixed.py --compile
+
+
+Output atteso: ✓ C module compiled successfully as crypto_accelerator.so
+
+🚀 Branch Porting (Windows/Linux - Build setup.py)
+
+Un branch separato (es. feature/windows-porting) utilizza setup.py per un build system multi-piattaforma.
+
+🪟 Windows 11
+
+Installa Strumenti C++:
+
+Usa il "Visual Studio Installer".
+
+Installa (o Modifica) "Visual Studio Build Tools".
+
+Assicurati che il workload "Sviluppo di applicazioni desktop con C++" sia selezionato.
+
+Installa Vcpkg e OpenSSL:
+
+# Clona vcpkg
+git clone [https://github.com/Microsoft/vcpkg.git](https://github.com/Microsoft/vcpkg.git) C:\vcpkg
+cd C:\vcpkg
+.\bootstrap-vcpkg.bat
+
+# Installa OpenSSL
+.\vcpkg.exe install openssl:x64-windows
+
+
+Crea Venv e Installa Requisiti:
+
+python -m venv venv
+.\venv\Scripts\activate
+pip install -r requirements.txt
+
+
+Compila il Modulo C:
+
+# Imposta la variabile d'ambiente per trovare OpenSSL
+$env:OPENSSL_ROOT_DIR = "C:\vcpkg\installed\x64-windows"
+
+# Compila
+python setup.py build_ext --inplace
+
+
+Correzione Runtime (Copia DLL):
+
+Copia i file libcrypto-*.dll e libssl-*.dll.
+
+Da: C:\vcpkg\installed\x64-windows\bin
+
+A: La cartella principale del tuo progetto (dove si trova setup.py).
+
+🐧 Linux (Ubuntu/Debian - con setup.py)
+
+Installa Dipendenze di Sistema:
+
+sudo apt update
+sudo apt install -y python3-dev build-essential libssl-dev python3-pip
+
+
+Crea Venv e Installa Requisiti:
+
+python3 -m venv venv
+source venv/bin/activate
+pip install -r requirements.txt
+
+
+Compila:
+
+python setup.py build_ext --inplace
+
+
+🧪 Testing
+
+Dopo la compilazione, puoi verificare l'integrazione del modulo C e il protocollo di rete.
+
+Test del Wrapper C
+
+Questo test verifica che il modulo C sia importato correttamente e che le funzioni di crittografia/decifratura funzionino.
+
+# Assicurati che il venv sia attivo
+# (Usa python3 su Linux, python su Windows)
+python python-wrapper-fixed.py --test
+
+
+Output atteso: C acceleration module loaded successfully e test superati (incluso il test di fallimento autenticazione).
+
+Test End-to-End (E2E)
+
+Questo test avvia un server e un client locali per verificare l'handshake e la comunicazione.
+
+Terminale 1 (Server):
+
+python secure-file-transfer-fixed.py --mode server
+
+
+Terminale 2 (Client):
+
+python secure-file-transfer-fixed.py --mode client --connect 127.0.0.1
+
+
+Output atteso: Il client invia un PING e il server risponde con PONG.
+
+🚀 Utilizzo
+
+🖥️ Avviare il Server
+
 # Esegui sull'host locale, porta 5555
-python3 secure-file-transfer-fixed.py --mode server
+python secure-file-transfer-fixed.py --mode server
 
 # Esegui su un IP specifico e porta custom
-python3 secure-file-transfer-fixed.py --mode server --host 192.168.1.100 --port 9999
-```
-Il server loggherà: `Server listening on 0.0.0.0:5555...`
+python secure-file-transfer-fixed.py --mode server --host 192.168.1.100 --port 9999
 
-### 💻 Connettere il Client
 
-Il client richiede il flag `--connect` per specificare l'indirizzo del server.
+💻 Connettere il Client
 
-```bash
 # Connettiti a un server locale
-python3 secure-file-transfer-fixed.py --mode client --connect 127.0.0.1:5555
+python secure-file-transfer-fixed.py --mode client --connect 127.0.0.1:5555
 
 # Connettiti a un server remoto
-python3 secure-file-transfer-fixed.py --mode client --connect 192.168.1.100:9999
-```
-Se l'handshake ha successo, entrambi i lati loggheranno: `Secure handshake successful with ...`
+python secure-file-transfer-fixed.py --mode client --connect 192.168.1.100:9999
 
-## Roadmap (Sviluppo Futuro)
 
-Questo repository implementa un'architettura di connessione sicura e autenticata. La prossima fase si concentrerà sull'implementazione della logica di trasferimento file.
+🗺️ Roadmap (Sviluppo Futuro)
 
-* [cite_start]**Team Dev:** Implementare la logica `file_transfer` nel loop `_handle_connection` [cite: 112] per gestire l'invio e la ricezione di file reali.
-* **Team Dev:** Aggiungere la ripresa dei trasferimenti interrotti.
-* **Team Controllo:** Scrivere un set di test `pytest` completo per automatizzare i test di integrazione, inclusi i fallimenti (es. tag GCM errati, firme HMAC non valide, test del rate-limit).
-* [cite_start]**Team Porting:** Adattare gli script di compilazione C e le dipendenze (es. `secure_memzero` [cite: 133][cite_start], `RAND_seed` [cite: 209]) per Windows (MSVC) e macOS (Clang).
+Team Dev: Implementare la logica file_transfer nel loop _handle_connection [cite: secure-file-transfer-fixed.py] per gestire l'invio e la ricezione di file reali.
+
+Team Dev: Aggiungere la ripresa dei trasferimenti interrotti.
+
+Team Controllo: Scrivere un set di test pytest completo per automatizzare i test di integrazione, inclusi i fallimenti (es. tag GCM errati, firme HMAC non valide, test del rate-limit).
+
+Team Porting: Continuare il lavoro sul branch di porting per Windows (MSVC) e macOS (Clang), stabilizzando il build system setup.py.
