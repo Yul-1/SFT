@@ -454,7 +454,7 @@ class SecureProtocol:
 
 class SecureFileTransferNode:
     """Nodo sicuro per trasferimento file con gestione DoS"""
-
+    HEADER_PACKET_SIZE = struct.calcsize('!4sII16s12s16s') # = 56 byte
     def __init__(self, mode: str, host: str = '0.0.0.0', port: int = DEFAULT_PORT):
         self.mode = mode
         self.host = host
@@ -564,7 +564,7 @@ class SecureFileTransferNode:
             # 2. Loop di comunicazione
             while self.running:
                 # 2.1. Riceve header
-                header = self._recv_all(54)
+                header = self._recv_all(self.HEADER_PACKET_SIZE)
                 if not header: break
 
                 # 2.2. Estrai la lunghezza del payload per ricevere l'intero pacchetto
@@ -599,7 +599,53 @@ class SecureFileTransferNode:
                 pass
             with self._counter_lock:
                 self._connection_counter -= 1
-    
+    def _client_message_loop(self):
+        """Gestisce il traffico cifrato per il client (dopo l'handshake)"""
+        thread_name = threading.current_thread().name
+        host = self.peer_address
+        
+        try:
+            # Genera la chiave di sessione iniziale dopo l'handshake
+            self.key_manager.generate_session_key()
+            
+            # Loop di comunicazione (preso da _handle_connection)
+            while self.running:
+                # 2.1. Riceve header
+                header = self._recv_all(self.HEADER_PACKET_SIZE) # Usa la costante
+                if not header: break
+
+                # 2.2. Estrai la lunghezza del payload
+                _, _, payload_len, *_ = struct.unpack('!4sII16s12s16s', header)
+                
+                if payload_len > MAX_PACKET_SIZE:
+                    logger.error("Received too large payload size in header.")
+                    break
+
+                ciphertext = self._recv_all(payload_len)
+                if not ciphertext: break
+
+                full_packet = header + ciphertext
+                
+                # 2.3. Parsa e decifra il pacchetto
+                message = self.protocol.parse_packet(full_packet, host)
+
+                if message:
+                    logger.info(f"[{thread_name}] Received message type: {message['type']}")
+                    # ... (Futura logica client qui)
+
+            logger.info(f"[{thread_name}] Connection closed gracefully.")
+
+        except (ValueError, Exception) as e:
+            # Evitiamo di loggare "Handshake failed" qui
+            if "Connection reset by peer" not in str(e) and self.running:
+                logger.error(f"[{thread_name}] Protocol or connection error: {e}", exc_info=False)
+            self.transfer_stats['errors'] += 1
+        finally:
+            try:
+                self.peer_socket.close()
+            except Exception:
+                pass
+
     def start_server(self):
         """Avvia server sicuro"""
         self.running = True
@@ -638,7 +684,7 @@ class SecureFileTransferNode:
         finally:
             self.shutdown()
 
-    def connect_to_server(self, host: str, port: int):
+def connect_to_server(self, host: str, port: int):
         """Connette al server in modo sicuro"""
         self.running = True
         self.peer_address = host
@@ -654,7 +700,7 @@ class SecureFileTransferNode:
                 raise ConnectionRefusedError("Secure handshake failed.")
                 
             # Avvia la gestione della connessione in un thread
-            self._handle_connection(self.peer_socket, (host, port))
+            self._client_message_loop()
 
         except (socket.error, ConnectionRefusedError) as e:
             logger.error(f"Connection failed: {e}")
