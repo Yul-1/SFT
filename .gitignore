@@ -2,3 +2,7 @@ venv/
 *.log
 crypto_accelerator.so
 __pycache__/
+# Build artifacts
+*.pyd
+*.dll
+build/

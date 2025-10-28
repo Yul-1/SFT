@@ -177,7 +177,7 @@ static PyObject* aes_gcm_encrypt_safe(PyObject* self, PyObject* args) {
 
     result = PyTuple_Pack(2, py_ciphertext, py_tag);
     Py_XDECREF(py_ciphertext);
-    Py_XDEDECREF(py_tag);
+    Py_XDECREF(py_tag);
 
 cleanup: 
     if (ctx) { 
@@ -186,13 +186,11 @@ cleanup:
     if (ciphertext) { 
         SAFE_FREE_SIZE(ciphertext, max_ciphertext_len);
     }
-    // Pulizia della chiave, IV e tag (best-effort)
-    if (key_len > 0 && key != NULL) {
-        secure_memzero((void*)key, (size_t)key_len);
-    }
-    if (iv_len > 0 && iv != NULL) {
-        secure_memzero((void*)iv, (size_t)iv_len);
-    }
+    
+    // 🟢 🟢 🟢 CORREZIONE 🟢 🟢 🟢 
+    // Rimosso secure_memzero per key e iv, perché corrompono
+    // l'oggetto bytes originale di Python.
+    // Dobbiamo ancora pulire il 'tag' locale C.
     secure_memzero(tag, sizeof(tag));
 
     return result;
@@ -280,15 +278,10 @@ cleanup:
     if (plaintext) { 
         SAFE_FREE_SIZE(plaintext, (size_t)ciphertext_len);
     } 
-    if (key_len > 0 && key != NULL) {
-        secure_memzero((void*)key, (size_t)key_len);
-    }
-    if (iv_len > 0 && iv != NULL) {
-        secure_memzero((void*)iv, (size_t)iv_len);
-    }
-    if (tag_len > 0 && tag != NULL) {
-        secure_memzero((void*)tag, (size_t)tag_len);
-    }
+    
+    // 🟢 🟢 🟢 CORREZIONE 🟢 🟢 🟢 
+    // Rimosso secure_memzero per key, iv e tag, perché
+    // corrompono gli oggetti bytes originali di Python.
     
     return result;
 }
