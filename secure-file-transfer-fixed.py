@@ -707,7 +707,7 @@ def connect_to_server(self, host: str, port: int):
         finally:
             self.shutdown()
 
-    def shutdown(self):
+def shutdown(self):
         """Spegnimento sicuro"""
         self.running = False
         if self.socket:
