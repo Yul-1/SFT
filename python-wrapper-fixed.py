@@ -14,6 +14,12 @@ import logging
 import threading
 import subprocess
 import platform
+import sysconfig
+from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+from cryptography.hazmat.backends import default_backend
+from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
+from cryptography.hazmat.primitives import padding as sym_padding
 from typing import Tuple, Optional, Dict, Any
 from pathlib import Path
 from dataclasses import dataclass, field
@@ -51,14 +57,6 @@ if not logger.handlers:
 
 if C_MODULE_AVAILABLE:
     logger.info("C acceleration module loaded successfully")
-else:
-    logger.warning("C module not available: falling back to pure-Python implementations")
-    # Fallback sicuro a cryptography
-    from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
-    from cryptography.hazmat.backends import default_backend
-    from cryptography.hazmat.primitives import hashes
-    from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
-    from cryptography.hazmat.primitives import padding as sym_padding
 
 # Utility
 def _clear_memory(data: bytes) -> None:
@@ -283,8 +281,12 @@ def compile_c_module():
     # Assumiamo che il file C sia nominato 'crypto-accelerator-fixed.c' e lo rinominiamo temporaneamente
     c_file_name = "crypto-accelerator-fixed.c"
     
+    # Trova il percorso corretto per Python.h
+    include_path = sysconfig.get_path('include')
+
     compile_cmd = [
         "gcc", "-shared", "-fPIC", "-O3", 
+        f"-I{include_path}",
         "-march=native", 
         "-D_FORTIFY_SOURCE=2", 
         "-fstack-protector-strong",
@@ -337,6 +339,7 @@ def test_integration():
         print("Encryption/Decryption successful.")
     except Exception as e:
         print(f"Encryption/Decryption failed: {e}")
+        return
         
     # Test 3: Fallimento di autenticazione
     try:

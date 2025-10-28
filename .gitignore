@@ -1,0 +1,3 @@
+venv/
+crypto_wrapper.log
+crypto_accelerator.so
