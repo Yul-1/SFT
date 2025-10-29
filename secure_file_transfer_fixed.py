@@ -2,7 +2,7 @@
 """
 Sistema di Trasferimento File Cifrato con Sicurezza Rafforzata
 Versione corretta con tutte le vulnerabilità risolte
-(Refactoring v2.2: Fix Rate Limiting su Data Chunks)
+(Refactoring v2.3: Gestione disconnessione pulita)
 """
 
 import socket
@@ -433,7 +433,6 @@ class SecureProtocol:
         'json' -> (payload è un dict)
         'data' -> (payload sono bytes)
         """
-        # 🟢 CORREZIONE: Rate limiting (DoS) - SPOSTATO PIÙ IN BASSO
         
         if len(data) < HEADER_PACKET_SIZE:
             raise ValueError("Packet too short")
@@ -449,7 +448,6 @@ class SecureProtocol:
         if version != 2:
             raise ValueError(f"Unsupported protocol version: {version}")
         
-        # 🟢 CORREZIONE: Limite su dimensione payload (DoS)
         if payload_len > MAX_PACKET_SIZE:
             raise ValueError(f"Payload too large: {payload_len}")
         
@@ -462,7 +460,7 @@ class SecureProtocol:
         # Gestione Tipi Payload
         if payload_type == PAYLOAD_TYPE_JSON:
             
-            # 🟢 CORREZIONE: Applica il Rate Limit SOLO ai pacchetti JSON (Comandi)
+            # Applica il Rate Limit SOLO ai pacchetti JSON (Comandi)
             if not self.rate_limiter.is_allowed(client_id):
                 logger.warning(f"Rate limit exceeded for JSON command from {client_id}")
                 raise ConnectionAbortedError(f"Rate limit exceeded for {client_id}")
@@ -526,7 +524,6 @@ class SecureFileTransferNode:
         self.port = port
         self.identity = f"{mode}_{secrets.token_hex(4)}"
         self.key_manager = SecureKeyManager(self.identity)
-        # 🟢 CORREZIONE: Utilizza deque per la gestione FIFO dei messaggi per evitare replay/DoS
         self.received_messages: deque[str] = deque(maxlen=MAX_RECEIVED_MESSAGES) 
         self.protocol = SecureProtocol(self.key_manager, self.received_messages)
         self.socket = None
@@ -592,6 +589,7 @@ class SecureFileTransferNode:
             try:
                 packet = self.peer_socket.recv(length - len(data))
                 if not packet:
+                    # Ritorna None se lo socket è chiuso (EOF)
                     return None
                 data += packet
             except socket.timeout:
@@ -740,13 +738,19 @@ class SecureFileTransferNode:
                     
                     logger.debug(f"[{thread_name}] Wrote chunk to {current_transfer['path'].name} at offset {offset}. Total {offset + len(payload)} / {current_transfer['total']}")
 
-
             logger.info(f"[{thread_name}] Connection closed gracefully.")
 
-        except (ValueError, ConnectionAbortedError, Exception) as e:
-            # Non loggare "Connection closed" come errore se stiamo chiudendo
-            if self.running or 'Connection closed' not in str(e):
-                logger.error(f"[{thread_name}] Protocol or connection error: {e}", exc_info=False)
+        # 🟢 CORREZIONE: Gestione pulita della disconnessione
+        except ConnectionAbortedError as e:
+            # Il client si è disconnesso (normale, dopo il file_ack o timeout)
+            logger.info(f"[{thread_name}] Client connection closed: {e}")
+        except ValueError as e:
+            # Errore nel protocollo (numero magico, replay, JSON malformato, firma)
+            logger.error(f"[{thread_name}] Protocol error: {e}", exc_info=False)
+            self.transfer_stats['errors'] += 1
+        except Exception as e:
+            # Errore socket imprevisto o altro
+            logger.error(f"[{thread_name}] Unhandled connection error: {e}", exc_info=True)
             self.transfer_stats['errors'] += 1
         finally:
             # Assicurati che l'handle del file sia chiuso
@@ -941,7 +945,7 @@ def simple_progress_callback(filename: str, current_bytes: int, total_bytes: int
         print("\nTrasferimento completato.")
 
 def main():
-    parser = argparse.ArgumentParser(description="Secure File Transfer Node (v2.2)")
+    parser = argparse.ArgumentParser(description="Secure File Transfer Node (v2.3)")
     parser.add_argument('--mode', choices=['server', 'client'], required=True, help='Run as server or client')
     parser.add_argument('--host', type=str, default='0.0.0.0', help='Binding host IP for server')
     parser.add_argument('--port', type=int, default=DEFAULT_PORT, help='Port number')
