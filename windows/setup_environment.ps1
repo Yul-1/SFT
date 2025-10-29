@@ -9,7 +9,8 @@ $PYTHON_VERSION = "3.13.0"
 $PYTHON_INSTALLER_URL = "https://www.python.org/ftp/python/$PYTHON_VERSION/python-$PYTHON_VERSION-amd64.exe"
 $PYTHON_INSTALLER = "python_installer.exe"
 $PROJECT_NAME = "SFT"
-$VENV_NAME = ".venv"
+$VENV_NAME = "venv"
+$APP_DATA_PATH = "$env:LOCALAPPDATA\$PROJECT_NAME"
 
 function Write-Step {
     param($Message)

@@ -71,15 +71,25 @@ HEADER_FORMAT = '!4sI B Q I 16s 12s 16s'
 HEADER_PACKET_SIZE = struct.calcsize(HEADER_FORMAT) # = 65 byte
 
 # Configurazione logging sicuro
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler('secure_transfer.log'),
-        logging.StreamHandler()
-    ]
-)
-logger = logging.getLogger(__name__)
+def setup_logging():
+    import os
+    # Crea cartella per i log in AppData/Local
+    log_dir = os.path.join(os.getenv('LOCALAPPDATA', ''), 'SFT', 'logs')
+    os.makedirs(log_dir, exist_ok=True)
+    
+    log_file = os.path.join(log_dir, 'secure_transfer.log')
+    
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        handlers=[
+            logging.FileHandler(log_file),
+            logging.StreamHandler()
+        ]
+    )
+    return logging.getLogger(__name__)
+
+logger = setup_logging()
 
 def _clear_memory(data: bytes) -> None:
     """
