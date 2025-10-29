@@ -25,6 +25,13 @@ import json
 from contextlib import contextmanager
 from logging.handlers import RotatingFileHandler
 
+# Aggiungi il percorso delle DLL OpenSSL al PATH su Windows
+if sys.platform == "win32":
+    vcpkg_root = os.environ.get('VCPKG_ROOT', 'C:\\vcpkg')
+    vcpkg_bin = os.path.join(vcpkg_root, 'installed', 'x64-windows', 'bin')
+    if os.path.exists(vcpkg_bin):
+        os.add_dll_directory(vcpkg_bin)
+
 # Prova a importare il modulo C compilato
 try:
     import crypto_accelerator as crypto_c 
@@ -48,6 +55,10 @@ if not logger.handlers:
     handler = RotatingFileHandler(DEFAULT_LOGFILE, maxBytes=5*1024*1024, backupCount=5, encoding='utf-8')
     formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
     handler.setFormatter(formatter)
+    logger.addHandler(handler)
+    
+    if not C_MODULE_AVAILABLE:
+        logger.warning("Modulo C non disponibile. Usando implementazione Python pura.")
     logger.addHandler(handler)
     console = logging.StreamHandler()
     console.setFormatter(formatter)
@@ -219,6 +230,8 @@ class SecureCrypto:
                     return crypto_c.aes_gcm_encrypt(data, key, iv)
                 except Exception as e:
                     logger.debug(f"C module failed for encrypt, falling back: {e}")
+                    with self._lock:
+                        self.stats['errors'] += 1 # Registra l'errore C
             
             # Fallback Python
             with self._lock:
@@ -245,7 +258,8 @@ class SecureCrypto:
                     return crypto_c.aes_gcm_decrypt(ciphertext, key, iv, tag)
                 except Exception as e:
                     logger.debug(f"C module failed for decrypt, falling back: {e}")
-            
+                    with self._lock:
+                        self.stats['errors'] += 1 # Registra l'errore C
             # Fallback Python
             with self._lock:
                 self.stats['python_fallback'] += 1

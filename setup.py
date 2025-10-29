@@ -9,30 +9,25 @@ import sys
 from setuptools import setup, Extension
 
 # --- Configurazione OpenSSL ---
-# Cerca OpenSSL in percorsi comuni o tramite variabili d'ambiente
-# Su Windows, imposta OPENSSL_ROOT_DIR o VCPKG_ROOT
-
-vcpkg_root = os.environ.get('VCPKG_ROOT')
-openssl_dir = os.environ.get('OPENSSL_ROOT_DIR')
+# Su Windows, usa OpenSSL installato da vcpkg
 
 if sys.platform == "win32":
-    if not openssl_dir and vcpkg_root:
-        # Percorso standard di vcpkg per installazioni x64
-        openssl_dir = os.path.join(vcpkg_root, 'installed', 'x64-windows')
+    vcpkg_root = os.environ.get('VCPKG_ROOT', 'C:\\vcpkg')
+    vcpkg_installed = os.path.join(vcpkg_root, 'installed', 'x64-windows')
     
-    if not openssl_dir or not os.path.exists(openssl_dir):
+    if not os.path.exists(vcpkg_installed):
         print("------------------------------------------------------------", file=sys.stderr)
-        print("ERRORE: OpenSSL non trovato.", file=sys.stderr)
-        print("Per favore, installa OpenSSL (es. 'vcpkg install openssl:x64-windows')", file=sys.stderr)
-        print("e imposta la variabile d'ambiente OPENSSL_ROOT_DIR.", file=sys.stderr)
-        print(f" (Cercato in: {openssl_dir})", file=sys.stderr)
+        print("ERRORE: OpenSSL non trovato in vcpkg.", file=sys.stderr)
+        print("Assicurati di aver installato OpenSSL con:", file=sys.stderr)
+        print("  vcpkg install openssl:x64-windows", file=sys.stderr)
         print("------------------------------------------------------------", file=sys.stderr)
         sys.exit(1)
-
-    print(f"--- Trovato OpenSSL in: {openssl_dir} ---")
     
-    include_dirs = [os.path.join(openssl_dir, 'include')]
-    library_dirs = [os.path.join(openssl_dir, 'lib')]
+    print(f"--- Usando OpenSSL da vcpkg: {vcpkg_installed} ---")
+    
+    # Usa OpenSSL da vcpkg
+    include_dirs = [os.path.join(vcpkg_installed, 'include')]
+    library_dirs = [os.path.join(vcpkg_installed, 'lib')]
     libraries = ['libcrypto', 'libssl']
     
     # Flag specifici per MSVC (anche se setuptools ne gestisce molti)

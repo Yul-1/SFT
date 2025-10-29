@@ -1,9 +1,42 @@
-venv/
-*.log
-crypto_accelerator.so
+# Python bytecode e cache
 __pycache__/
-# Build artifacts
+*.py[cod]
+*$py.class
+
+# Ambienti virtuali
+venv/
+.venv/
+ENV/
+*.env
+
+# Log e file di output
+*.log
+secure_transfer.log
+crypto_wrapper.log
+ricevuti/
+
+# File di test generati
+file.txt
+test_file.txt
+*.pcapng
+
+# Build e compilazione
+## Linux/Unix
+*.so
+crypto_accelerator.so
+## Windows
 *.pyd
 *.dll
+*.exp
+*.lib
 build/
-.venv/
+temp/
+
+# IDE e editor
+.vscode/
+*.swp
+*~
+
+# File temporanei di sistema
+Thumbs.db
+.DS_Store
