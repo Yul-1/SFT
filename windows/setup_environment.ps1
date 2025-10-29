@@ -65,21 +65,38 @@ Push-Location $VCPKG_PATH
 .\vcpkg.exe install openssl:x64-windows
 Pop-Location
 
+# Ottieni il percorso dell'installazione
+$INSTALL_PATH = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
+Write-Host "Directory di installazione: $INSTALL_PATH"
+
+# Cambia alla directory di installazione
+Set-Location $INSTALL_PATH
+
 # Crea virtual environment e installa dipendenze
 Write-Step "Configurazione ambiente Python"
 if (-not (Test-Path $VENV_NAME)) {
+    Write-Host "Creazione ambiente virtuale in $INSTALL_PATH\$VENV_NAME"
     python -m venv $VENV_NAME
 }
 
 # Attiva il virtual environment e installa le dipendenze
-& ".\$VENV_NAME\Scripts\Activate.ps1"
-python -m pip install --upgrade pip
-pip install -r requirements.txt
+Write-Host "Attivazione ambiente virtuale..."
+& "$INSTALL_PATH\$VENV_NAME\Scripts\Activate.ps1"
+if ($?) {
+    Write-Host "Aggiornamento pip..."
+    python -m pip install --upgrade pip
+    Write-Host "Installazione dipendenze..."
+    pip install -r requirements.txt
 
-# Compila il modulo C
-Write-Step "Compilazione modulo C"
-$env:OPENSSL_ROOT_DIR = Join-Path $VCPKG_PATH "installed\x64-windows"
-python setup.py build_ext --inplace
+    # Compila il modulo C
+    Write-Step "Compilazione modulo C"
+    $env:OPENSSL_ROOT_DIR = Join-Path $VCPKG_PATH "installed\x64-windows"
+    Write-Host "OPENSSL_ROOT_DIR = $env:OPENSSL_ROOT_DIR"
+    python setup.py build_ext --inplace
+} else {
+    Write-Error "Errore nell'attivazione dell'ambiente virtuale!"
+    exit 1
+}
 
 Write-Step "Installazione completata!"
 Write-Host "Per avviare il server:`n  .\$VENV_NAME\Scripts\python.exe secure_file_transfer_fixed.py --mode server`n"

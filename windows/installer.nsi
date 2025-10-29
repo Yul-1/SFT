@@ -78,8 +78,9 @@ Section "MainSection" SEC01
     CreateDirectory "$SMPROGRAMS\SFT"
     
     ; Collegamento per Setup Environment
-    ExecWait 'cmd.exe /c mklink "$SMPROGRAMS\SFT\Setup Environment.lnk" "%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe"'
-    WriteINIStr "$SMPROGRAMS\SFT\Setup Environment.lnk" "Shell" "Arguments" '-ExecutionPolicy Bypass -NoExit -File "$INSTDIR\windows\setup_environment.ps1"'
+    CreateShortCut "$SMPROGRAMS\SFT\Setup Environment.lnk" "powershell.exe" \
+                   '-NoExit -ExecutionPolicy Bypass -Command "Start-Process powershell -Verb RunAs -ArgumentList \"-ExecutionPolicy Bypass -NoExit -File \"\"$INSTDIR\windows\setup_environment.ps1\"\"\"' \
+                   "$WINDIR\System32\WindowsPowerShell\v1.0\powershell.exe" 0
     
     ; Collegamento per Guida Rapida
     CreateShortCut "$SMPROGRAMS\SFT\Guida Rapida.lnk" "notepad.exe" \
