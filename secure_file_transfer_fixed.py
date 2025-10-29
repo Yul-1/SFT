@@ -2,7 +2,7 @@
 """
 Sistema di Trasferimento File Cifrato con Sicurezza Rafforzata
 Versione corretta con tutte le vulnerabilità risolte
-(Refactoring v2.3: Gestione disconnessione pulita)
+(Refactoring v2.4: Thread-safe connection handling)
 """
 
 import socket
@@ -541,48 +541,8 @@ class SecureFileTransferNode:
             OUTPUT_DIR.mkdir(exist_ok=True)
             logger.info(f"Directory di output {OUTPUT_DIR.resolve()} assicurata.")
 
-    def _perform_secure_handshake(self) -> bool:
-        """Esegue l'handshake RSA-OAEP"""
-        try:
-            # 1. Invia chiave pubblica e ricevi chiave pubblica del peer
-            public_key_pem = self.key_manager.get_public_key_pem()
-            self.peer_socket.sendall(struct.pack('!I', len(public_key_pem)) + public_key_pem)
-
-            header_len = struct.calcsize('!I')
-            header = self._recv_all(header_len)
-            if not header: return False
-            peer_key_len, = struct.unpack('!I', header)
-            peer_key_pem = self._recv_all(peer_key_len)
-            if not peer_key_pem: return False
-
-            # 2. Scambia segreto (Iniziatore vs Risponditore)
-            if self.mode == 'client':
-                encrypted_secret = self.key_manager.establish_shared_secret(peer_key_pem)
-                self.peer_socket.sendall(struct.pack('!I', len(encrypted_secret)) + encrypted_secret)
-                confirm_header = self._recv_all(header_len)
-                if not confirm_header: return False
-                confirm_len, = struct.unpack('!I', confirm_header)
-                confirm_msg = self._recv_all(confirm_len)
-                if confirm_msg != b"AUTH_OK": return False
-            elif self.mode == 'server':
-                secret_header = self._recv_all(header_len)
-                if not secret_header: return False
-                secret_len, = struct.unpack('!I', secret_header)
-                encrypted_secret = self._recv_all(secret_len)
-                if not encrypted_secret: return False
-                self.key_manager.decrypt_shared_secret(encrypted_secret)
-                confirm_msg = b"AUTH_OK"
-                self.peer_socket.sendall(struct.pack('!I', len(confirm_msg)) + confirm_msg)
-
-            logger.info(f"Secure handshake successful with {self.peer_address}")
-            return True
-
-        except Exception as e:
-            logger.error(f"Handshake failed: {e}")
-            self.transfer_stats['auth_failures'] += 1
-            return False
-
-def _recv_all(self, sock: socket.socket, length: int) -> Optional[bytes]:
+    # 🟢 INIZIO REFACTORING THREAD-SAFE (Funzione #1)
+    def _recv_all(self, sock: socket.socket, length: int) -> Optional[bytes]:
         """Riceve esattamente N bytes o None in caso di errore/timeout"""
         data = b''
         while len(data) < length:
@@ -593,17 +553,62 @@ def _recv_all(self, sock: socket.socket, length: int) -> Optional[bytes]:
                     return None
                 data += packet
             except socket.timeout:
-                logger.warning(f"Socket timeout during reception") # Rimosso peer_address per semplicità
+                logger.warning(f"Socket timeout during reception") # Rimosso peer_address
                 return None
             except Exception as e:
                 logger.error(f"Error receiving data: {e}")
                 return None
         return data
+    # 🟢 FINE REFACTORING THREAD-SAFE (Funzione #1)
 
-    def _read_and_parse_packet(self, client_id: str) -> Tuple[str, Any, int]:
+    # 🟢 INIZIO REFACTORING THREAD-SAFE (Funzione #2)
+    def _perform_secure_handshake(self, sock: socket.socket, peer_addr: str) -> bool:
+        """Esegue l'handshake RSA-OAEP"""
+        try:
+            # 1. Invia chiave pubblica e ricevi chiave pubblica del peer
+            public_key_pem = self.key_manager.get_public_key_pem()
+            sock.sendall(struct.pack('!I', len(public_key_pem)) + public_key_pem) # USA sock
+
+            header_len = struct.calcsize('!I')
+            header = self._recv_all(sock, header_len) # PASSA sock
+            if not header: return False
+            peer_key_len, = struct.unpack('!I', header)
+            peer_key_pem = self._recv_all(sock, peer_key_len) # PASSA sock
+            if not peer_key_pem: return False
+
+            # 2. Scambia segreto (Iniziatore vs Risponditore)
+            if self.mode == 'client':
+                encrypted_secret = self.key_manager.establish_shared_secret(peer_key_pem)
+                sock.sendall(struct.pack('!I', len(encrypted_secret)) + encrypted_secret) # USA sock
+                confirm_header = self._recv_all(sock, header_len) # PASSA sock
+                if not confirm_header: return False
+                confirm_len, = struct.unpack('!I', confirm_header)
+                confirm_msg = self._recv_all(sock, confirm_len) # PASSA sock
+                if confirm_msg != b"AUTH_OK": return False
+            elif self.mode == 'server':
+                secret_header = self._recv_all(sock, header_len) # PASSA sock
+                if not secret_header: return False
+                secret_len, = struct.unpack('!I', secret_header)
+                encrypted_secret = self._recv_all(sock, secret_len) # PASSA sock
+                if not encrypted_secret: return False
+                self.key_manager.decrypt_shared_secret(encrypted_secret)
+                confirm_msg = b"AUTH_OK"
+                sock.sendall(struct.pack('!I', len(confirm_msg)) + confirm_msg) # USA sock
+
+            logger.info(f"Secure handshake successful with {peer_addr}") # USA peer_addr
+            return True
+
+        except Exception as e:
+            logger.error(f"Handshake failed: {e}")
+            self.transfer_stats['auth_failures'] += 1
+            return False
+    # 🟢 FINE REFACTORING THREAD-SAFE (Funzione #2)
+
+    # 🟢 INIZIO REFACTORING THREAD-SAFE (Funzione #3)
+    def _read_and_parse_packet(self, sock: socket.socket, client_id: str) -> Tuple[str, Any, int]:
         """Helper per leggere un pacchetto completo (Header + Payload) e parsarlo"""
         # 1. Riceve header
-        header = self._recv_all(HEADER_PACKET_SIZE)
+        header = self._recv_all(sock, HEADER_PACKET_SIZE) # PASSA sock
         if not header:
             raise ConnectionAbortedError("Connection closed while reading header")
 
@@ -619,7 +624,7 @@ def _recv_all(self, sock: socket.socket, length: int) -> Optional[bytes]:
             raise ValueError("Received too large payload size in header.")
 
         # 3. Riceve payload
-        ciphertext = self._recv_all(payload_len)
+        ciphertext = self._recv_all(sock, payload_len) # PASSA sock
         if not ciphertext:
             raise ConnectionAbortedError("Connection closed while reading payload")
 
@@ -629,8 +634,9 @@ def _recv_all(self, sock: socket.socket, length: int) -> Optional[bytes]:
         # Questo solleverà eccezioni in caso di fallimento decrypt/auth
         pkt_type, payload, offset = self.protocol.parse_packet(full_packet, client_id)
         return pkt_type, payload, offset
+    # 🟢 FINE REFACTORING THREAD-SAFE (Funzione #3)
 
-
+    # 🟢 INIZIO REFACTORING THREAD-SAFE (Funzione #4)
     def _handle_connection(self, conn: socket.socket, addr: Tuple[str, int]):
         """Gestisce il traffico cifrato in un thread separato (LOGICA SERVER)"""
         with self._counter_lock:
@@ -638,9 +644,8 @@ def _recv_all(self, sock: socket.socket, length: int) -> Optional[bytes]:
         
         thread_name = threading.current_thread().name
         host, port = addr
-        self.peer_address = host
-        self.peer_socket = conn
-        self.peer_socket.settimeout(SOCKET_TIMEOUT)
+        # NON IMPOSTARE self.peer_address o self.peer_socket
+        conn.settimeout(SOCKET_TIMEOUT) # USA conn
         
         logger.info(f"[{thread_name}] Incoming connection from {host}:{port}")
         
@@ -651,11 +656,11 @@ def _recv_all(self, sock: socket.socket, length: int) -> Optional[bytes]:
             # 0. Controllo limite connessioni (DoS - Circuit breaker)
             if self._connection_counter > MAX_GLOBAL_CONNECTIONS:
                 logger.error(f"Global connection limit reached ({MAX_GLOBAL_CONNECTIONS}). Closing connection from {host}.")
-                self.peer_socket.close()
+                conn.close() # USA conn
                 return
 
             # 1. Handshake e autenticazione
-            if not self._perform_secure_handshake():
+            if not self._perform_secure_handshake(conn, host): # PASSA conn, host
                 logger.error(f"[{thread_name}] Handshake failed. Closing connection.")
                 return
             
@@ -663,7 +668,7 @@ def _recv_all(self, sock: socket.socket, length: int) -> Optional[bytes]:
             while self.running:
                 
                 # 2.1. Leggi e parsa il prossimo pacchetto
-                pkt_type, payload, offset = self._read_and_parse_packet(host)
+                pkt_type, payload, offset = self._read_and_parse_packet(conn, host) # PASSA conn, host
 
                 # 2.2. Gestione Pacchetti JSON (Comandi)
                 if pkt_type == 'json':
@@ -674,7 +679,7 @@ def _recv_all(self, sock: socket.socket, length: int) -> Optional[bytes]:
                         logger.info(f"[{thread_name}] Responding with PONG.")
                         try:
                             pong_packet = self.protocol._create_json_packet('pong', {})
-                            self.peer_socket.sendall(pong_packet)
+                            conn.sendall(pong_packet) # USA conn
                         except Exception as e:
                             logger.error(f"[{thread_name}] Failed to send PONG: {e}")
                             break # Interrompi se l'invio fallisce
@@ -708,7 +713,7 @@ def _recv_all(self, sock: socket.socket, length: int) -> Optional[bytes]:
                             'file_resume_ack', 
                             {'filename': filename, 'offset': current_offset}
                         )
-                        self.peer_socket.sendall(ack_packet)
+                        conn.sendall(ack_packet) # USA conn
 
                     elif msg_type == 'file_complete':
                         if not current_transfer:
@@ -721,7 +726,7 @@ def _recv_all(self, sock: socket.socket, length: int) -> Optional[bytes]:
                         
                         # Invia ACK finale
                         ack_packet = self.protocol._create_json_packet('file_ack', {'filename': filename})
-                        self.peer_socket.sendall(ack_packet)
+                        conn.sendall(ack_packet) # USA conn
                         current_transfer = {}
 
                 # 2.3. Gestione Pacchetti DATA (Chunks)
@@ -760,12 +765,13 @@ def _recv_all(self, sock: socket.socket, length: int) -> Optional[bytes]:
                 except Exception as e:
                     logger.error(f"[{thread_name}] Failed to close file handle: {e}")
             try:
-                self.peer_socket.close()
+                conn.close() # USA conn
             except Exception:
                 pass
             with self._counter_lock:
                 self._connection_counter -= 1
-    
+    # 🟢 FINE REFACTORING THREAD-SAFE (Funzione #4)
+
     def start_server(self):
         """Avvia server sicuro"""
         self.running = True
@@ -816,9 +822,11 @@ def _recv_all(self, sock: socket.socket, length: int) -> Optional[bytes]:
             logger.info(f"Connecting to {host}:{port}...")
             self.peer_socket.connect((host, port))
             
+            # 🟢 INIZIO REFACTORING THREAD-SAFE (Client)
             # Handshake
-            if not self._perform_secure_handshake():
+            if not self._perform_secure_handshake(self.peer_socket, self.peer_address):
                 raise ConnectionRefusedError("Secure handshake failed.")
+            # 🟢 FINE REFACTORING THREAD-SAFE (Client)
                 
             logger.info("Connection successful. Ready to send files.")
             # Non avvia un loop, resta in attesa di comandi (es. send_file)
@@ -849,7 +857,9 @@ def _recv_all(self, sock: socket.socket, length: int) -> Optional[bytes]:
             self.transfer_stats['sent'] += 1
 
             # 2. Attendi ACK/Resume
-            pkt_type, response, _ = self._read_and_parse_packet(self.peer_address)
+            # 🟢 INIZIO REFACTORING THREAD-SAFE (Client)
+            pkt_type, response, _ = self._read_and_parse_packet(self.peer_socket, self.peer_address)
+            # 🟢 FINE REFACTORING THREAD-SAFE (Client)
             self.transfer_stats['received'] += 1
             
             if pkt_type != 'json' or response.get('type') != 'file_resume_ack':
@@ -900,7 +910,9 @@ def _recv_all(self, sock: socket.socket, length: int) -> Optional[bytes]:
             self.transfer_stats['sent'] += 1
             
             # 5. Attendi ACK finale
-            pkt_type, response, _ = self._read_and_parse_packet(self.peer_address)
+            # 🟢 INIZIO REFACTORING THREAD-SAFE (Client)
+            pkt_type, response, _ = self._read_and_parse_packet(self.peer_socket, self.peer_address)
+            # 🟢 FINE REFACTORING THREAD-SAFE (Client)
             self.transfer_stats['received'] += 1
             if pkt_type == 'json' and response.get('type') == 'file_ack':
                 logger.info(f"Server acknowledged file_complete for {filename}.")
