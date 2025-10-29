@@ -2,3 +2,4 @@ venv/
 *.log
 crypto_accelerator.so
 __pycache__/
+ricevuti/

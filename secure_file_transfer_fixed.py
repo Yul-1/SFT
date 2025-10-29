@@ -2,7 +2,7 @@
 """
 Sistema di Trasferimento File Cifrato con Sicurezza Rafforzata
 Versione corretta con tutte le vulnerabilità risolte
-(Refactoring v2.1: Chunking, Resume, Callbacks)
+(Refactoring v2.2: Fix Rate Limiting su Data Chunks)
 """
 
 import socket
@@ -433,10 +433,7 @@ class SecureProtocol:
         'json' -> (payload è un dict)
         'data' -> (payload sono bytes)
         """
-        # 🟢 CORREZIONE: Rate limiting (DoS)
-        if not self.rate_limiter.is_allowed(client_id):
-            logger.warning(f"Rate limit exceeded for {client_id}")
-            raise ConnectionAbortedError(f"Rate limit exceeded for {client_id}")
+        # 🟢 CORREZIONE: Rate limiting (DoS) - SPOSTATO PIÙ IN BASSO
         
         if len(data) < HEADER_PACKET_SIZE:
             raise ValueError("Packet too short")
@@ -464,6 +461,12 @@ class SecureProtocol:
         
         # Gestione Tipi Payload
         if payload_type == PAYLOAD_TYPE_JSON:
+            
+            # 🟢 CORREZIONE: Applica il Rate Limit SOLO ai pacchetti JSON (Comandi)
+            if not self.rate_limiter.is_allowed(client_id):
+                logger.warning(f"Rate limit exceeded for JSON command from {client_id}")
+                raise ConnectionAbortedError(f"Rate limit exceeded for {client_id}")
+            
             # Verifica replay: Hash del plaintext per ID messaggio
             message_id = hashlib.sha256(plaintext).hexdigest()
             if not self._check_and_add_message(message_id):
@@ -500,7 +503,7 @@ class SecureProtocol:
             return ('json', message, offset)
         
         elif payload_type == PAYLOAD_TYPE_DATA:
-            # È un chunk di dati binari, non fare parsing/validazione JSON
+            # È un chunk di dati binari, NON applicare rate limit o parsing JSON
             return ('data', plaintext, offset)
             
         else:
@@ -741,7 +744,9 @@ class SecureFileTransferNode:
             logger.info(f"[{thread_name}] Connection closed gracefully.")
 
         except (ValueError, ConnectionAbortedError, Exception) as e:
-            logger.error(f"[{thread_name}] Protocol or connection error: {e}", exc_info=False)
+            # Non loggare "Connection closed" come errore se stiamo chiudendo
+            if self.running or 'Connection closed' not in str(e):
+                logger.error(f"[{thread_name}] Protocol or connection error: {e}", exc_info=False)
             self.transfer_stats['errors'] += 1
         finally:
             # Assicurati che l'handle del file sia chiuso
@@ -936,7 +941,7 @@ def simple_progress_callback(filename: str, current_bytes: int, total_bytes: int
         print("\nTrasferimento completato.")
 
 def main():
-    parser = argparse.ArgumentParser(description="Secure File Transfer Node (v2.1)")
+    parser = argparse.ArgumentParser(description="Secure File Transfer Node (v2.2)")
     parser.add_argument('--mode', choices=['server', 'client'], required=True, help='Run as server or client')
     parser.add_argument('--host', type=str, default='0.0.0.0', help='Binding host IP for server')
     parser.add_argument('--port', type=int, default=DEFAULT_PORT, help='Port number')
