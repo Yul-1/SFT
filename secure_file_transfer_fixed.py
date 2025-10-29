@@ -526,6 +526,9 @@ class SecureFileTransferNode:
         self.key_manager = SecureKeyManager(self.identity)
         self.received_messages: deque[str] = deque(maxlen=MAX_RECEIVED_MESSAGES) 
         self.protocol = SecureProtocol(self.key_manager, self.received_messages)
+        # Limite basso per mitigare scan DoS (es. nmap -sV)
+        self.connection_limiter = RateLimiter(max_requests=10, window_seconds=60)
+        
         self.socket = None
         self.peer_socket: Optional[socket.socket] = None
         self.peer_address: Optional[str] = None
@@ -639,15 +642,25 @@ class SecureFileTransferNode:
     # 🟢 INIZIO REFACTORING THREAD-SAFE (Funzione #4)
     def _handle_connection(self, conn: socket.socket, addr: Tuple[str, int]):
         """Gestisce il traffico cifrato in un thread separato (LOGICA SERVER)"""
-        with self._counter_lock:
-            self._connection_counter += 1
         
         thread_name = threading.current_thread().name
         host, port = addr
         # NON IMPOSTARE self.peer_address o self.peer_socket
         conn.settimeout(SOCKET_TIMEOUT) # USA conn
         
-        logger.info(f"[{thread_name}] Incoming connection from {host}:{port}")
+        logger.info(f"[{thread_name}] Incoming connection attempt from {host}:{port}")
+        
+        # Mitiga DoS da connection flood (es. nmap -sV) prima del costoso handshake
+        if not self.connection_limiter.is_allowed(host):
+            logger.warning(f"[{thread_name}] Connection rate limit (pre-handshake) exceeded for {host}. Closing.")
+            self.transfer_stats['auth_failures'] += 1 # Contiamo come fallimento auth
+            conn.close()
+            # Usciamo *prima* di incrementare il _connection_counter
+            return
+
+        # Spostato DOPO il check del rate-limit
+        with self._counter_lock:
+            self._connection_counter += 1
         
         # Stato del trasferimento per questa connessione
         current_transfer: Dict[str, Any] = {}
@@ -657,12 +670,12 @@ class SecureFileTransferNode:
             if self._connection_counter > MAX_GLOBAL_CONNECTIONS:
                 logger.error(f"Global connection limit reached ({MAX_GLOBAL_CONNECTIONS}). Closing connection from {host}.")
                 conn.close() # USA conn
-                return
+                return # 'finally' si occuperà del decremento
 
             # 1. Handshake e autenticazione
             if not self._perform_secure_handshake(conn, host): # PASSA conn, host
                 logger.error(f"[{thread_name}] Handshake failed. Closing connection.")
-                return
+                return # 'finally' si occuperà del decremento
             
             # 2. Loop di comunicazione (State Machine)
             while self.running:
@@ -778,8 +791,18 @@ class SecureFileTransferNode:
         self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         # Permette il riuso dell'indirizzo
         self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        
+        # 🟢 MODIFICA: Bindando a self.port (che può essere 0)
         self.socket.bind((self.host, self.port))
+        
+        # 🟢 MODIFICA: Recupera la porta reale assegnata dal SO
+        # Se self.port era 0, ora conterrà la porta effimera
+        actual_port = self.socket.getsockname()[1]
+        self.port = actual_port
+        
         self.socket.listen(5) # Backlog limitato
+        
+        # Il log ora mostrerà la porta corretta
         logger.info(f"Server listening on {self.host}:{self.port}...")
         logger.info(f"File verranno salvati in: {OUTPUT_DIR.resolve()}")
 
