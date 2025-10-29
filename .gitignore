@@ -1,5 +1,17 @@
-venv/
-*.log
-crypto_accelerator.so
+# Byte-compiled / optimized / DLL files
 __pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Virtual environment
+venv/
+*.env
+
+# Log e file di output
+secure_transfer.log
+*.log
 ricevuti/
+
+# File di test generati
+file.txt

@@ -11,7 +11,7 @@ from collections import deque
 
 # Importiamo i componenti necessari dal nostro script principale
 # Assumiamo che i file siano nella stessa directory
-from secure_file_transfer_fixed import SecureFileTransferNode, SecureProtocol, SecureKeyManager, HEADER_PACKET_SIZE
+from secure_file_transfer_fixed import SecureFileTransferNode, SecureProtocol, SecureKeyManager, HEADER_PACKET_SIZE, HEADER_FORMAT
 
 # Definiamo costanti per il test
 TEST_PORT = 5556
@@ -39,12 +39,11 @@ def secure_server():
 
 def perform_client_handshake(host, port) -> Tuple[socket.socket, SecureProtocol]:
     """
-    Helper per eseguire un handshake client manuale e restituire 
-    un socket connesso e un'istanza di SecureProtocol pronta.
+    Helper per eseguire un handshake client manuale (LOGICA SIMMETRICA)
+    per corrispondere a _perform_secure_handshake
     """
     # 0. Inizializza il KeyManager e il Protocollo lato client
     key_manager = SecureKeyManager('test_client')
-    # Usiamo una deque fittizia per il protocollo
     protocol = SecureProtocol(key_manager, deque(maxlen=100))
 
     # 1. Connessione
@@ -52,28 +51,31 @@ def perform_client_handshake(host, port) -> Tuple[socket.socket, SecureProtocol]
     sock.settimeout(5)
     sock.connect((host, port))
     
-    # 2. Esegui l'handshake come definito in _perform_secure_handshake
+    # 2. Esegui l'handshake (SIMMETRICO)
     try:
-        # Invia la chiave pubblica
+        header_len = struct.calcsize('!I')
+        
+        # 1. Invia la chiave pubblica
         public_key_pem = key_manager.get_public_key_pem()
         sock.sendall(struct.pack('!I', len(public_key_pem)) + public_key_pem)
 
-        # Ricevi la chiave pubblica del server
+        # 2. Ricevi la chiave pubblica del server
         header = sock.recv(4)
         if not header: raise ConnectionError("Handshake failed: no peer key header")
         peer_key_len, = struct.unpack('!I', header)
         peer_key_pem = sock.recv(peer_key_len)
         if not peer_key_pem: raise ConnectionError("Handshake failed: no peer key")
 
-        # Stabilisci e invia il segreto
+        # 3. Stabilisci e invia il segreto
         encrypted_secret = key_manager.establish_shared_secret(peer_key_pem)
         sock.sendall(struct.pack('!I', len(encrypted_secret)) + encrypted_secret)
         
-        # Ricevi conferma
+        # 4. Ricevi conferma
         confirm_header = sock.recv(4)
         if not confirm_header: raise ConnectionError("Handshake failed: no auth header")
         confirm_len, = struct.unpack('!I', confirm_header)
         confirm_msg = sock.recv(confirm_len)
+        
         if confirm_msg != b"AUTH_OK":
             raise ConnectionError(f"Handshake failed: invalid auth response {confirm_msg}")
             
@@ -95,11 +97,11 @@ def test_nonce_uniqueness(secure_server):
     
     try:
         # Crea e invia il primo pacchetto
-        packet1_bytes = protocol.create_packet('ping', {})
+        packet1_bytes = protocol._create_json_packet('ping', {})
         sock.sendall(packet1_bytes)
         
         # Crea e invia il secondo pacchetto
-        packet2_bytes = protocol.create_packet('ping', {})
+        packet2_bytes = protocol._create_json_packet('ping', {})
         sock.sendall(packet2_bytes)
         
         # Estrai i nonce dall'header.
@@ -128,7 +130,7 @@ def test_replay_attack_detection(secure_server):
     
     try:
         # Crea e invia il pacchetto valido
-        valid_packet = protocol.create_packet('ping', {})
+        valid_packet = protocol._create_json_packet('ping', {})
         sock.sendall(valid_packet)
         
         # Aspetta la risposta PONG per essere sicuri che il server lo abbia processato
@@ -140,7 +142,7 @@ def test_replay_attack_detection(secure_server):
         # Dobbiamo leggere anche il payload del PONG per svuotare il buffer
         # Estrai la lunghezza del payload dall'header
         try:
-            _magic, _ver, payload_len, *_ = struct.unpack('!4sII16s12s16s', header_bytes)
+            _magic, _ver, _type, _offset, payload_len, *_ = struct.unpack(HEADER_FORMAT, header_bytes)
         except struct.error:
             pytest.fail("Il server ha inviato un header PONG malformato")
 

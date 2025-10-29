@@ -221,6 +221,8 @@ class SecureCrypto:
                     return crypto_c.aes_gcm_encrypt(data, key, iv)
                 except Exception as e:
                     logger.debug(f"C module failed for encrypt, falling back: {e}")
+                    with self._lock:
+                        self.stats['errors'] += 1 # Registra l'errore C
             
             # Fallback Python
             with self._lock:
@@ -247,7 +249,8 @@ class SecureCrypto:
                     return crypto_c.aes_gcm_decrypt(ciphertext, key, iv, tag)
                 except Exception as e:
                     logger.debug(f"C module failed for decrypt, falling back: {e}")
-            
+                    with self._lock:
+                        self.stats['errors'] += 1 # Registra l'errore C
             # Fallback Python
             with self._lock:
                 self.stats['python_fallback'] += 1
