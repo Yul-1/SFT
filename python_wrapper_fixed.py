@@ -59,9 +59,10 @@ if C_MODULE_AVAILABLE:
     logger.info("C acceleration module loaded successfully")
 
 # Utility
-def _clear_memory(data: bytes) -> None:
+def _clear_memory(data: Any) -> None:
     """
     Pulizia sicura della memoria (Best-Effort in Python) per i dati sensibili.
+    Funziona SOLO su tipi mutabili (es. bytearray).
     """
     if data is None:
         return
@@ -69,11 +70,6 @@ def _clear_memory(data: bytes) -> None:
         if isinstance(data, bytearray):
             for i in range(len(data)):
                 data[i] = 0
-        elif isinstance(data, bytes):
-            temp = bytearray(data)
-            for i in range(len(temp)):
-                temp[i] = 0
-            del temp
     except Exception:
         pass # Best effort
 
@@ -199,15 +195,6 @@ class SecureCrypto:
         with self._lock:
             return self._key_cache.get(key_id)
         
-    def _cache_put(self, key_id: str, key: bytes):
-        with self._lock:
-            if len(self._key_cache) >= self.config.max_key_cache:
-                oldest_id = self._key_cache_order.pop(0)
-                old_key = self._key_cache.pop(oldest_id, b'')
-                _clear_memory(old_key)
-            if key_id not in self._key_cache:
-                self._key_cache[key_id] = bytes(key)
-                self._key_cache_order.append(key_id)
 
     def encrypt_aes_gcm(self, data: bytes, key: bytes, iv: bytes) -> Tuple[bytes, bytes]:
         """ Cifratura AES-256-GCM con fallback """
@@ -302,7 +289,7 @@ def compile_c_module():
     if platform.system() == "Darwin":
         compile_cmd[0] = "clang"
         compile_cmd[1] = "-dynamiclib"
-        compile_cmd[-2] = "crypto_accelerator.dylib"
+        compile_cmd[-1] = "crypto_accelerator.dylib"
         # Rimuovi flag non supportati
         compile_cmd = [c for c in compile_cmd if not c.startswith("-Wl,-z")]
 

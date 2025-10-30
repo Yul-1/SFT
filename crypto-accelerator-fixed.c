@@ -4,7 +4,6 @@
 // gcc -shared -fPIC -O3 -march=native -D_FORTIFY_SOURCE=2 -fstack-protector-strong crypto_accelerator_fixed.c -o crypto_accelerator.so -lcrypto
 #define PY_SSIZE_T_CLEAN
 #include <Python.h>
-#include <Python.h>
 #include <openssl/evp.h>
 #include <openssl/aes.h>
 #include <openssl/rand.h>
@@ -186,15 +185,13 @@ cleanup:
     if (ciphertext) { 
         SAFE_FREE_SIZE(ciphertext, max_ciphertext_len);
     }
-    // Pulizia della chiave, IV e tag (best-effort)
-    //if (key_len > 0 && key != NULL) {
-    //    secure_memzero((void*)key, (size_t)key_len);
-    //}
-    //if (iv_len > 0 && iv != NULL) {
-    //    secure_memzero((void*)iv, (size_t)iv_len);
-    //}
-    //secure_memzero(tag, sizeof(tag));
-
+    /*
+     * 🟢 FIX (Analisi #16): NON puliamo key, iv, e tag qui.
+     * Questi buffer sono puntatori a oggetti 'bytes' immutabili di Python.
+     * Scrivere su di essi (es. secure_memzero) corrompe la memoria 
+     * interna di Python.
+     * Puliamo solo i buffer allocati localmente in C (es. plaintext_buf).
+     */
     return result;
 }
 
@@ -280,16 +277,13 @@ cleanup:
     if (plaintext) { 
         SAFE_FREE_SIZE(plaintext, (size_t)ciphertext_len);
     } 
-    //if (key_len > 0 && key != NULL) {
-    //    secure_memzero((void*)key, (size_t)key_len);
-    //}
-    //if (iv_len > 0 && iv != NULL) {
-    //    secure_memzero((void*)iv, (size_t)iv_len);
-    //}
-    //if (tag_len > 0 && tag != NULL) {
-    //    secure_memzero((void*)tag, (size_t)tag_len);
-    //}
-    
+    /*
+     * 🟢 FIX (Analisi #16): NON puliamo key, iv, e tag qui.
+     * Questi buffer sono puntatori a oggetti 'bytes' immutabili di Python.
+     * Scrivere su di essi (es. secure_memzero) corrompe la memoria 
+     * interna di Python.
+     * Puliamo solo i buffer allocati localmente in C (es. plaintext_buf).
+     */
     return result;
 }
 

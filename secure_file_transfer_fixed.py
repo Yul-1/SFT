@@ -81,22 +81,19 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-def _clear_memory(data: bytes) -> None:
+def _clear_memory(data: Any) -> None:
     """
     Pulizia sicura della memoria (Best-Effort in Python) per i dati sensibili.
+    Funziona SOLO su tipi mutabili (es. bytearray).
     """
-    if data and hasattr(data, '__len__'):
-        try:
-            if isinstance(data, bytearray):
-                for i in range(len(data)):
-                    data[i] = 0
-            elif isinstance(data, bytes):
-                temp = bytearray(data)
-                for i in range(len(temp)):
-                    temp[i] = 0
-                del temp
-        except:
-            pass # Best effort
+    if data is None:
+        return
+    try:
+        if isinstance(data, bytearray):
+            for i in range(len(data)):
+                data[i] = 0
+    except Exception:
+        pass # Best effort
 
 class RateLimiter:
     """Limita il rate delle richieste per prevenire DoS, con cleanup TTL"""
@@ -693,6 +690,7 @@ class SecureFileTransferNode:
             # 🟢 FINE MODIFICA
             
             # 0. Controllo limite connessioni (DoS - Circuit breaker)
+            # 🟢 FIX (Analisi #9): Eseguito PRIMA dell'handshake costoso.
             if self._connection_counter > MAX_GLOBAL_CONNECTIONS:
                 logger.error(f"Global connection limit reached ({MAX_GLOBAL_CONNECTIONS}). Closing connection from {host}.")
                 conn.close() # USA conn
@@ -730,8 +728,23 @@ class SecureFileTransferNode:
                         # 🟢 MODIFICA: Usa il protocol locale
                         filename = protocol.sanitize_filename(payload['payload']['filename'])
                         total_size = int(payload['payload']['total_size'])
+                        file_hash = payload['payload'].get('hash') # 🟢 FIX (Analisi #10)
                         safe_path = OUTPUT_DIR / filename
                         
+                       # 🟢 FIX (Analisi #15): Applica MAX_FILE_SIZE
+                        if total_size > MAX_FILE_SIZE:
+                            logger.error(f"[{thread_name}] File '{filename}' exceeds MAX_FILE_SIZE ({total_size} > {MAX_FILE_SIZE}). Rejecting.")
+                            # Invia un errore (best-effort) e chiudi
+                            try:
+                                err_packet = protocol._create_json_packet(
+                                    'file_ack', 
+                                    {'filename': filename, 'error': 'File too large'}
+                                )
+                                conn.sendall(err_packet)
+                            except Exception:
+                                pass
+                            break # Interrompi il loop e chiudi la connessione
+
                         current_offset = 0
                         mode = 'wb'
                         
@@ -749,8 +762,7 @@ class SecureFileTransferNode:
                                 current_offset = 0
                         
                         file_handle = safe_path.open(mode)
-                        current_transfer = {'path': safe_path, 'handle': file_handle, 'total': total_size}
-                        
+                        current_transfer = {'path': safe_path, 'handle': file_handle, 'total': total_size, 'hash': file_hash}                        
                         # Invia ACK con l'offset
                         # 🟢 MODIFICA: Usa il protocol locale
                         ack_packet = protocol._create_json_packet(
@@ -767,10 +779,38 @@ class SecureFileTransferNode:
                         filename = payload['payload']['filename']
                         logger.info(f"[{thread_name}] Transfer complete for {filename}")
                         current_transfer['handle'].close()
+
                         
+                        # 🟢 FIX (Analisi #10): Verifica hash
+                        final_hash_ok = False
+                        client_hash = current_transfer.get('hash')
+                        file_path = current_transfer.get('path')
+
+                        if client_hash and file_path and file_path.exists():
+                            logger.info(f"[{thread_name}] Verifying hash for {file_path.name}...")
+                            try:
+                                server_hash_obj = hashlib.sha256()
+                                with file_path.open('rb') as f_verify:
+                                    while chunk := f_verify.read(BUFFER_SIZE * 10):
+                                        server_hash_obj.update(chunk)
+                                calculated_hash = server_hash_obj.hexdigest()
+
+                                if hmac.compare_digest(calculated_hash, client_hash):
+                                    logger.info(f"[{thread_name}] Hash verification SUCCESS")
+                                    final_hash_ok = True
+                                else:
+                                    logger.error(f"[{thread_name}] HASH MISMATCH. Expected: {client_hash}, Got: {calculated_hash}")
+                            except Exception as e:
+                                logger.error(f"[{thread_name}] Failed to verify hash: {e}")
+                        else:
+                            logger.warning(f"[{thread_name}] Skipping hash check (no hash provided or file missing).")
+                            final_hash_ok = True # Considera ok se saltato                        
                         # Invia ACK finale
                         # 🟢 MODIFICA: Usa il protocol locale
-                        ack_packet = protocol._create_json_packet('file_ack', {'filename': filename})
+                        ack_payload = {'filename': filename}
+                        if not final_hash_ok:
+                            ack_payload['error'] = 'Hash mismatch on server'
+                        ack_packet = protocol._create_json_packet('file_ack', ack_payload)
                         conn.sendall(ack_packet) # USA conn
                         current_transfer = {}
 
@@ -912,11 +952,17 @@ class SecureFileTransferNode:
             total_size = local_path.stat().st_size
             # 🟢 MODIFICA: Usa self.protocol (logica Client)
             filename = self.protocol.sanitize_filename(local_path.name)
-            
+            # 🟢 FIX (Analisi #10): Calcola hash
+            logger.info(f"Calculating SHA-256 hash for {filename}...")
+            file_hash_obj = hashlib.sha256()
+            with local_path.open('rb') as f_hash:
+                while chunk := f_hash.read(BUFFER_SIZE * 10):
+                    file_hash_obj.update(chunk)
+            file_hash = file_hash_obj.hexdigest()
+
             # 1. Invia 'file_header'
             logger.info(f"Sending file header for {filename} ({total_size} bytes)")
-            header_payload = {'filename': filename, 'total_size': total_size}
-            # 🟢 MODIFICA: Usa self.protocol (logica Client)
+            header_payload = {'filename': filename, 'total_size': total_size, 'hash': file_hash}            # 🟢 MODIFICA: Usa self.protocol (logica Client)
             header_packet = self.protocol._create_json_packet('file_header', header_payload)
             self.peer_socket.sendall(header_packet)
             self.transfer_stats['sent'] += 1
@@ -947,6 +993,14 @@ class SecureFileTransferNode:
                     # Legge un chunk
                     chunk = f.read(BUFFER_SIZE) 
                     if not chunk:
+                        # 🟢 FIX (Analisi #10): EOF prematuro!
+                        logger.error(f"EOF reached prematurely at {current_offset} (expected {total_size}). File modified?")
+                        # Invia un errore (best-effort)
+                        err_packet = self.protocol._create_json_packet(
+                            'file_complete', 
+                            {'filename': filename, 'error': 'File read error (EOF)'}
+                        )
+                        self.peer_socket.sendall(err_packet)
                         break
                     
                     # 🟢 MODIFICA: Usa self.protocol (logica Client)

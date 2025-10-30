@@ -137,8 +137,6 @@ def test_aes_gcm_decrypt_invalid_key(crypto_data):
     assert key != invalid_key
 
     with pytest.raises(ValueError, match="Decryption failed"):
-        crypto_c.aes_gcm_decrypt(ciphertext, key, iv, tag) # Errore mio, doveva essere invalid_key
-        # Correggo:
         crypto_c.aes_gcm_decrypt(ciphertext, invalid_key, iv, tag)
 
 def test_aes_gcm_decrypt_invalid_iv(crypto_data):
