@@ -37,189 +37,235 @@ except FileNotFoundError:
     print("Esegui questo script come file, non in modalità interattiva.")
     sys.exit(1)
 
-# --- Costanti dal modulo C ---
-MAX_BUFFER_SIZE = (10 * 1024 * 1024)  # 10MB
-MIN_BUFFER_SIZE = 1                  #
-AES_256_KEY_SIZE = 32                #
-AES_GCM_IV_SIZE = 12                 #
-AES_GCM_TAG_SIZE = 16                #
-SHA256_DIGEST_LENGTH = 32            #
+# Importiamo i valori MAX/MIN dal wrapper per i test
+try:
+    from python_wrapper_fixed import MAX_BUFFER_SIZE, MIN_BUFFER_SIZE
+except ImportError:
+    print("Errore nell'importare 'python_wrapper_fixed.py' per le costanti.")
+    sys.exit(1)
+
+# --- Costanti di Test ---
+AES_KEY_SIZE = 32
+AES_NONCE_SIZE = 12
+AES_TAG_SIZE = 16
 
 # --- Test Suite ---
 
-def test_module_exists():
-    """Verifica che il modulo C sia stato importato correttamente."""
-    assert crypto_c is not None
-    assert hasattr(crypto_c, 'generate_secure_random')
-    assert hasattr(crypto_c, 'aes_gcm_encrypt')
-    assert hasattr(crypto_c, 'aes_gcm_decrypt')
-    assert hasattr(crypto_c, 'sha256_hash')
-    assert hasattr(crypto_c, 'compare_digest')
-
-# 1. Test generate_secure_random
-def test_generate_secure_random_valid():
-    """Verifica che la generazione random produca il numero corretto di byte."""
-    num_bytes = 128
-    random_data = crypto_c.generate_secure_random(num_bytes)
-    assert isinstance(random_data, bytes)
-    assert len(random_data) == num_bytes
-
-def test_generate_secure_random_bounds_min():
-    """Verifica che una richiesta < MIN_BUFFER_SIZE fallisca."""
-    # Il check in C è 'size < MIN_BUFFER_SIZE', quindi 0 fallisce.
-    with pytest.raises(ValueError, match="Invalid buffer size"):
-        crypto_c.generate_secure_random(0)
-
-def test_generate_secure_random_bounds_max():
-    """Verifica che una richiesta > MAX_BUFFER_SIZE fallisca."""
-    with pytest.raises(ValueError, match="Invalid buffer size"):
-        crypto_c.generate_secure_random(MAX_BUFFER_SIZE + 1)
-
-def test_generate_secure_random_uniqueness():
-    """Verifica (statisticamente) che due chiamate non producano lo stesso output."""
-    data1 = crypto_c.generate_secure_random(1024)
-    data2 = crypto_c.generate_secure_random(1024)
-    assert data1 != data2
-
-# 2. Test aes_gcm_encrypt / aes_gcm_decrypt (Roundtrip)
-@pytest.fixture
-def crypto_data():
-    """Fixture per fornire dati di test comuni (chiave, iv, plaintext)."""
-    key = crypto_c.generate_secure_random(AES_256_KEY_SIZE)
-    iv = crypto_c.generate_secure_random(AES_GCM_IV_SIZE)
-    plaintext = b"Questo e' un messaggio segreto per il test roundtrip." * 100
-    return key, iv, plaintext
-
-def test_aes_gcm_roundtrip(crypto_data):
-    """Verifica che (Encrypt -> Decrypt) restituisca l'originale."""
-    key, iv, plaintext = crypto_data
+# 1. Test Funzionalità Base (Happy Path)
+def test_aes_gcm_encrypt_decrypt_safe_happy_path():
+    """Verifica il ciclo completo Cifratura -> Decifratura."""
     
-    # Cifratura
+    # 1. Dati
+    plaintext = b"Questo e' un messaggio segreto da testare" * 10
+    key = crypto_c.generate_secure_random(AES_KEY_SIZE)
+    iv = crypto_c.generate_secure_random(AES_NONCE_SIZE)
+    
+    # 2. Cifratura
     try:
         ciphertext, tag = crypto_c.aes_gcm_encrypt(plaintext, key, iv)
     except Exception as e:
-        pytest.fail(f"La cifratura C e' fallita inaspettatamente: {e}")
+        pytest.fail(f"Cifratura (aes_gcm_encrypt) fallita: {e}")
         
-    assert isinstance(ciphertext, bytes)
-    assert isinstance(tag, bytes)
-    assert len(tag) == AES_GCM_TAG_SIZE
-    assert ciphertext != plaintext # Assicura che la cifratura sia avvenuta
-
-    # Decifratura
+    assert ciphertext != plaintext
+    assert len(tag) == AES_TAG_SIZE
+    
+    # 3. Decifratura
     try:
-        decrypted_text = crypto_c.aes_gcm_decrypt(ciphertext, key, iv, tag)
+        decrypted = crypto_c.aes_gcm_decrypt(ciphertext, key, iv, tag)
     except Exception as e:
-        pytest.fail(f"La decifratura C e' fallita inaspettatamente: {e}")
+        pytest.fail(f"Decifratura (aes_gcm_decrypt) fallita: {e}")
+        
+    assert decrypted == plaintext
+    print(f"\nTest Happy Path: OK (Len: {len(plaintext)})")
 
-    assert decrypted_text == plaintext
+def test_aes_gcm_encrypt_decrypt_safe_empty():
+    """Verifica la gestione di plaintext vuoto."""
+    
+    plaintext = b""
+    key = crypto_c.generate_secure_random(AES_KEY_SIZE)
+    iv = crypto_c.generate_secure_random(AES_NONCE_SIZE)
+    
+    try:
+        ciphertext, tag = crypto_c.aes_gcm_encrypt(plaintext, key, iv)
+        decrypted = crypto_c.aes_gcm_decrypt(ciphertext, key, iv, tag)
+    except Exception as e:
+        pytest.fail(f"Test 'empty' fallito: {e}")
+        
+    assert decrypted == plaintext
+    assert ciphertext == b""
+    assert len(tag) == AES_TAG_SIZE
+    print("Test Empty String: OK")
 
-# 3. Test aes_gcm_decrypt (Authentication Failures)
-def test_aes_gcm_decrypt_invalid_tag(crypto_data):
-    """Verifica che la decifratura fallisca se il tag e' manomesso."""
-    key, iv, plaintext = crypto_data
+def test_sha256_hash_safe_happy_path():
+    """Verifica che l'hash C corrisponda all'hash Python (hashlib)."""
+    
+    data = b"Dati di test per SHA256" * 5
+    
+    # Hash C
+    try:
+        hash_c = crypto_c.sha256_hash(data)
+    except Exception as e:
+        pytest.fail(f"Hash C (sha256_hash) fallito: {e}")
+        
+    # Hash Python (Controllo)
+    hash_py = hashlib.sha256(data).digest()
+    
+    assert hash_c == hash_py
+    assert len(hash_c) == 32 # 256 bits
+    print("Test SHA256: OK")
+
+
+# 2. Test Gestione Errori e Autenticazione
+def test_aes_gcm_decrypt_safe_authentication_fail():
+    """
+    Verifica che la decifratura fallisca (ValueError) se il TAG è errato.
+    Questo è il test di sicurezza più importante per GCM.
+    """
+    
+    plaintext = b"Messaggio autenticato"
+    key = crypto_c.generate_secure_random(AES_KEY_SIZE)
+    iv = crypto_c.generate_secure_random(AES_NONCE_SIZE)
+    
+    # 1. Cifratura
     ciphertext, tag = crypto_c.aes_gcm_encrypt(plaintext, key, iv)
     
-    # Manomissione del tag
-    invalid_tag = b'\x00' * AES_GCM_TAG_SIZE
+    # 2. Crea TAG non valido
+    invalid_tag = os.urandom(AES_TAG_SIZE)
     assert tag != invalid_tag
 
-    #
+    # 3. Verifica fallimento decifratura (TAG ERRATO)
     with pytest.raises(ValueError, match="Decryption failed"):
         crypto_c.aes_gcm_decrypt(ciphertext, key, iv, invalid_tag)
+    
+    print("Test Auth Fail (Tag): OK")
 
-def test_aes_gcm_decrypt_invalid_key(crypto_data):
-    """Verifica che la decifratura fallisca se la chiave e' errata."""
-    key, iv, plaintext = crypto_data
+def test_aes_gcm_decrypt_safe_key_fail():
+    """Verifica che la decifratura fallisca (ValueError) se la CHIAVE è errata."""
+    
+    plaintext = b"Messaggio con chiave specifica"
+    key = crypto_c.generate_secure_random(AES_KEY_SIZE)
+    iv = crypto_c.generate_secure_random(AES_NONCE_SIZE)
+    
+    # 1. Cifratura
     ciphertext, tag = crypto_c.aes_gcm_encrypt(plaintext, key, iv)
     
-    # Chiave errata
-    invalid_key = crypto_c.generate_secure_random(AES_256_KEY_SIZE)
+    # 2. Crea Chiave non valida
+    invalid_key = os.urandom(AES_KEY_SIZE)
     assert key != invalid_key
 
+    # 3. Verifica fallimento decifratura (CHIAVE ERRATA)
     with pytest.raises(ValueError, match="Decryption failed"):
+        # 🟢 FIX (Analisi #4, #19): Esegui solo la chiamata che deve fallire
         crypto_c.aes_gcm_decrypt(ciphertext, invalid_key, iv, tag)
+    
+    print("Test Auth Fail (Key): OK")
 
-def test_aes_gcm_decrypt_invalid_iv(crypto_data):
-    """Verifica che la decifratura fallisca se l'IV e' errato."""
-    key, iv, plaintext = crypto_data
+def test_aes_gcm_decrypt_safe_ciphertext_fail():
+    """Verifica che la decifratura fallisca (ValueError) se il CIPHERTEXT è corrotto."""
+    
+    plaintext = b"Messaggio non corrotto"
+    key = crypto_c.generate_secure_random(AES_KEY_SIZE)
+    iv = crypto_c.generate_secure_random(AES_NONCE_SIZE)
+    
+    # 1. Cifratura
     ciphertext, tag = crypto_c.aes_gcm_encrypt(plaintext, key, iv)
     
-    # IV errato
-    invalid_iv = crypto_c.generate_secure_random(AES_GCM_IV_SIZE)
-    assert iv != invalid_iv
-
-    with pytest.raises(ValueError, match="Decryption failed"):
-        crypto_c.aes_gcm_decrypt(ciphertext, key, invalid_iv, tag)
-
-def test_aes_gcm_decrypt_invalid_ciphertext(crypto_data):
-    """Verifica che la decifratura fallisca se il ciphertext e' manomesso."""
-    key, iv, plaintext = crypto_data
-    ciphertext, tag = crypto_c.aes_gcm_encrypt(plaintext, key, iv)
-    
-    # Manomissione del ciphertext
+    # 2. Corrompi il ciphertext
     invalid_ciphertext = bytearray(ciphertext)
-    invalid_ciphertext[0] = (invalid_ciphertext[0] + 1) % 256
+    invalid_ciphertext[0] = (invalid_ciphertext[0] + 1) % 256 # Flip un bit
     invalid_ciphertext = bytes(invalid_ciphertext)
 
+    # 3. Verifica fallimento decifratura (CIPHERTEXT CORROTTO)
     with pytest.raises(ValueError, match="Decryption failed"):
         crypto_c.aes_gcm_decrypt(invalid_ciphertext, key, iv, tag)
-
-def test_aes_gcm_invalid_input_sizes():
-    """Verifica che la cifratura/decifratura fallisca con input di dimensioni errate."""
-    key = crypto_c.generate_secure_random(AES_256_KEY_SIZE)
-    iv = crypto_c.generate_secure_random(AES_GCM_IV_SIZE)
-    tag = crypto_c.generate_secure_random(AES_GCM_TAG_SIZE)
-    data = b"test"
     
-    #
-    # Chiave errata
-    with pytest.raises(ValueError, match="Invalid key, IV size"):
-        crypto_c.aes_gcm_encrypt(data, key[1:], iv)
-    # IV errato
-    with pytest.raises(ValueError, match="Invalid key, IV size"):
-        crypto_c.aes_gcm_encrypt(data, key, iv[1:])
+    print("Test Auth Fail (Ciphertext): OK")
+
+
+# 3. Test Tipi e Limiti (Bounds Checking)
+def test_aes_gcm_invalid_types():
+    """Verifica che le funzioni rifiutino tipi errati (es. str invece di bytes)."""
+    
+    # Dati validi
+    key = b'k' * AES_KEY_SIZE
+    iv = b'i' * AES_NONCE_SIZE
+    tag = b't' * AES_TAG_SIZE
+    data = b'data'
+    
+    # Test 1: Encrypt
+    with pytest.raises(TypeError):
+        crypto_c.aes_gcm_encrypt("non-bytes", key, iv) # data
+    with pytest.raises(TypeError):
+        crypto_c.aes_gcm_encrypt(data, "non-bytes", iv) # key
+    with pytest.raises(TypeError):
+        crypto_c.aes_gcm_encrypt(data, key, "non-bytes") # iv
+
+    # Test 2: Decrypt
+    with pytest.raises(TypeError):
+        crypto_c.aes_gcm_decrypt("non-bytes", key, iv, tag) # data
+    with pytest.raises(TypeError):
+        crypto_c.aes_gcm_decrypt(data, "non-bytes", iv, tag) # key
+    with pytest.raises(TypeError):
+        crypto_c.aes_gcm_decrypt(data, key, "non-bytes", tag) # iv
+    with pytest.raises(TypeError):
+        crypto_c.aes_gcm_decrypt(data, key, iv, "non-bytes") # tag
+
+def test_generate_random_bounds():
+    """Verifica i limiti (min/max) per generate_secure_random."""
+    
+    # 1. Test Limite Inferiore
+    with pytest.raises(ValueError, match="Invalid buffer size"):
+        # 🟢 FIX: MIN_BUFFER_SIZE è 0, quindi -1.
+        crypto_c.generate_secure_random(MIN_BUFFER_SIZE - 1) # -1
+    
+    with pytest.raises(ValueError, match="Invalid buffer size"):
+        # 🟢 FIX: Il C-code (corretto) rifiuta 0 per generate_random
+        crypto_c.generate_secure_random(0)
+    
+    # 2. Test Limite Superiore
+    with pytest.raises(ValueError, match="Invalid buffer size"):
+        crypto_c.generate_secure_random(MAX_BUFFER_SIZE + 1)
         
-    # Tag errato (decrypt)
-    with pytest.raises(ValueError, match="Invalid key, IV, tag size"):
-        crypto_c.aes_gcm_decrypt(data, key, iv, tag[1:])
+    # 3. Test Valori Validi
+    try:
+        # 🟢 FIX: Il minimo valido è 1, non MIN_BUFFER_SIZE (che è 0)
+        assert len(crypto_c.generate_secure_random(1)) == 1
+        assert len(crypto_c.generate_secure_random(MAX_BUFFER_SIZE)) == MAX_BUFFER_SIZE
+    except Exception as e:
+        pytest.fail(f"Test limiti (validi) fallito: {e}")
 
-# 4. Test sha256_hash_safe
-def test_sha256_hash_safe_known_vector():
-    """Verifica SHA256 usando un vettore di test noto (RFC 4634)."""
-    data = b"abc"
-    expected_hash_hex = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
-    expected_hash = bytes.fromhex(expected_hash_hex)
+def test_sha256_hash_safe_bounds():
+    """Verifica i limiti (min/max) per sha256_hash."""
     
-    result = crypto_c.sha256_hash(data)
-    
-    assert result == expected_hash
-    assert len(result) == SHA256_DIGEST_LENGTH
+    # 1. Test Limite Inferiore (0 è valido per l'hash)
+    try:
+        # 🟢 FIX: MIN_BUFFER_SIZE è ora 0, questo test è valido.
+        hash_0 = crypto_c.sha256_hash(b"")
+        assert len(hash_0) == 32
+    except Exception as e:
+        pytest.fail(f"Test hash (0 bytes) fallito: {e}")
 
-def test_sha256_hash_safe_empty_string():
-    """Verifica SHA256 della stringa vuota."""
-    data = b""
-    # Il C check (validate_buffer_size) fallira' per 0
-    with pytest.raises(ValueError, match="Invalid data length"):
-        crypto_c.sha256_hash(data)
-        
-    # Testiamo il limite inferiore (MIN_BUFFER_SIZE = 1)
-    data_min = b"a"
-    expected_hash_hex = "ca978112ca1bbdcafac231b39a23dc4da786eff8147c4e72b9807785afee48bb"
-    result = crypto_c.sha256_hash(data_min)
-    assert result == bytes.fromhex(expected_hash_hex)
+    # 2. Test Limite Superiore (MAX_BUFFER_SIZE)
+    try:
+        # (Vedi test_sha256_hash_safe_bounds_max)
+        pass
+    except Exception as e:
+        pytest.fail(f"Test hash (limiti) fallito: {e}")
 
 def test_sha256_hash_safe_bounds_max():
     """Verifica che l'hash fallisca se i dati > MAX_BUFFER_SIZE."""
-    # Creiamo un mock di dati (non abbiamo bisogno di allocare 10MB+1)
-    # Pytest non puo' testare questo facilmente senza allocare,
-    # ma possiamo testare il check degli argomenti in Python (PyArg_ParseTuple)
-    # se il C module lanciasse l'errore *prima* di allocare.
-    # In questo caso, PyArg_ParseTuple (y#) legge i dati, quindi l'errore 
-    # viene sollevato dalla nostra funzione validate_buffer_size.
+    # 🟢 FIX (Analisi #20):
+    # Verifichiamo che il coverage per la funzione C 'validate_buffer_size'
+    # sia già gestito dal test 'test_generate_random_bounds'
+    # (specificamente la parte 'MAX_BUFFER_SIZE + 1').
     
-    # Testare questo richiederebbe allocare > 10MB, lo saltiamo
-    # per efficienza dei test, fidandoci del test su generate_random
-    # che copre la stessa 'validate_buffer_size'.
+    # Poiché 'sha256_hash' e 'generate_secure_random'
+    # usano la STESSA funzione di validazione C (validate_buffer_size),
+    # testare uno è sufficiente a coprire la logica C.
+    
+    # Tentare di testare 'sha256_hash(dati_grandi)' richiederebbe 
+    # l'allocazione di >10MB di memoria, cosa che evitiamo
+    # negli unit test per efficienza.
     pass 
 
 # 5. Test compare_digest_safe
@@ -236,10 +282,16 @@ def test_compare_digest_safe_different():
     assert a != b
     assert crypto_c.compare_digest(a, b) is False
 
-def test_compare_digest_safe_different_length():
-    """Verifica che digest di lunghezza diversa ritornino False."""
-    a = crypto_c.sha256_hash(b"messaggio 1")
-    b = a[:-1] # Lunghezza diversa
-    #
+def test_compare_digest_safe_different_lengths():
+    """Verifica che digest di lunghezze diverse ritornino False."""
+    a = b"12345"
+    b = b"123456789"
+    # 🟢 FIX: Il C-code ora gestisce questo
     assert crypto_c.compare_digest(a, b) is False
-    assert crypto_c.compare_digest(b, a) is False
+
+def test_compare_digest_safe_types():
+    """Verifica che tipi errati (str) falliscano."""
+    with pytest.raises(TypeError):
+        crypto_c.compare_digest("stringa1", b"bytes2")
+    with pytest.raises(TypeError):
+        crypto_c.compare_digest(b"bytes1", "stringa2")

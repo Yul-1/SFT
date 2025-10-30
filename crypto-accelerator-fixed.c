@@ -4,6 +4,7 @@
 // gcc -shared -fPIC -O3 -march=native -D_FORTIFY_SOURCE=2 -fstack-protector-strong crypto_accelerator_fixed.c -o crypto_accelerator.so -lcrypto
 #define PY_SSIZE_T_CLEAN
 #include <Python.h>
+// 🟢 FIX (Analisi #1)
 #include <openssl/evp.h>
 #include <openssl/aes.h>
 #include <openssl/rand.h>
@@ -28,328 +29,339 @@
 #endif
 
 // Macro per controlli sicuri
-#define SAFE_FREE_SIZE(ptr, size) do { \
-    if (ptr) { \
-        secure_memzero(ptr, size); \
-        free(ptr); \
-        ptr = NULL; \
-    } \
-} while(0)
+#define CHECK_PTR(ptr) if (ptr == NULL) { PyErr_SetString(PyExc_MemoryError, "OpenSSL allocation failed"); goto cleanup; }
+#define CHECK_SSL_SUCCESS(ret) if (ret <= 0) { PyErr_SetString(PyExc_ValueError, "OpenSSL operation failed"); goto cleanup; }
 
-// Limiti sicuri
-#define MAX_BUFFER_SIZE (10 * 1024 * 1024)  // 10MB max
-#define MIN_BUFFER_SIZE 1
-#define AES_256_KEY_SIZE 32
-#define AES_GCM_IV_SIZE 12
-#define AES_GCM_TAG_SIZE 16
-#define SHA256_DIGEST_LENGTH 32
+// Definizioni costanti (per coerenza con il wrapper)
+// 🟢 FIX: 0 è una lunghezza valida per encrypt/hash
+#define MIN_PY_BUFFER_SIZE 0
+#define MAX_PY_BUFFER_SIZE (10 * 1024 * 1024)
 
-// Funzione sicura per validazione parametri
-static int validate_buffer_size(Py_ssize_t size) {
-    if (size < MIN_BUFFER_SIZE || size > MAX_BUFFER_SIZE) {
-        return 0;
+// 🟢 CORREZIONE: Funzione helper per validazione
+static int validate_buffer_size(Py_ssize_t size, Py_ssize_t min, Py_ssize_t max, const char* name) {
+    if (size > max || size < min) {
+        PyErr_Format(PyExc_ValueError, "Invalid %s size: %zd. Must be between %zd and %zd bytes.",
+                     name, size, min, max);
+        return 0; // Fallito
     }
-    return 1;
+    return 1; // Successo
 }
 
-static PyObject* generate_secure_random(PyObject* self, PyObject* args) {
-    Py_ssize_t num_bytes;
-    if (!PyArg_ParseTuple(args, "n", &num_bytes)) {
-        return NULL;
-    }
-    
-    if (!validate_buffer_size(num_bytes)) {
-        PyErr_Format(PyExc_ValueError, 
-            "Invalid buffer size: must be between %d and %d bytes",
-            MIN_BUFFER_SIZE, MAX_BUFFER_SIZE);
-        return NULL;
-    }
-    
-    unsigned char *buffer = (unsigned char*)calloc(1, (size_t)num_bytes);
-    if (!buffer) {
-        PyErr_NoMemory();
-        return NULL;
-    }
-    
-    if (RAND_bytes(buffer, (int)num_bytes) != 1) {
-        unsigned long err = ERR_get_error();
-        char err_buf[256];
-        ERR_error_string_n(err, err_buf, sizeof(err_buf));
-        
-        SAFE_FREE_SIZE(buffer, (size_t)num_bytes);
-        PyErr_Format(PyExc_RuntimeError, 
-            "OpenSSL random generation failed: %s", err_buf);
-        return NULL;
-    }
-    
-    PyObject *result = PyBytes_FromStringAndSize((char*)buffer, num_bytes);
-    SAFE_FREE_SIZE(buffer, (size_t)num_bytes);
-    
-    return result;
-}
 
-// Cifratura AES-256-GCM sicura
+// --- Funzioni Crittografiche Sicure ---
+
+/*
+ * Cifra AES-GCM (PyBytes -> PyTuple(bytes, bytes))
+ */
 static PyObject* aes_gcm_encrypt_safe(PyObject* self, PyObject* args) {
-    const char *plaintext = NULL;
-    Py_ssize_t plaintext_len = 0;
-    const char *key = NULL;
-    Py_ssize_t key_len = 0;
-    const char *iv = NULL;
-    Py_ssize_t iv_len = 0;
+    PyObject* result_tuple = NULL;
+    PyObject* ciphertext_obj = NULL;
+    PyObject* tag_obj = NULL;
     
+    const unsigned char *plaintext = NULL;
+    const unsigned char *key = NULL;
+    const unsigned char *iv = NULL;
+    Py_ssize_t plaintext_len, key_len, iv_len;
+
+    // Buffer C
+    unsigned char *ciphertext_buf = NULL;
+    unsigned char *tag_buf = NULL;
+    
+    // Contesto OpenSSL
     EVP_CIPHER_CTX *ctx = NULL;
-    unsigned char *ciphertext = NULL;
-    int out_len = 0;
-    unsigned char tag[AES_GCM_TAG_SIZE];
-    PyObject *result = NULL;
-    size_t max_ciphertext_len = 0;
+    int len, ciphertext_len;
 
-    // inizializza result esplicitamente
-    result = NULL;
-
-    if (!PyArg_ParseTuple(args, "y#y#y#", 
-                          &plaintext, &plaintext_len, 
-                          &key, &key_len, 
-                          &iv, &iv_len)) {
-        return NULL;
+    // 1. Parse argomenti (y# = bytes read-only)
+    if (!PyArg_ParseTuple(args, "y#y#y#", &plaintext, &plaintext_len, &key, &key_len, &iv, &iv_len)) {
+        return NULL; // TypeError sollevato da ParseTuple
     }
-    
-    if (key_len != AES_256_KEY_SIZE || iv_len != AES_GCM_IV_SIZE || !validate_buffer_size(plaintext_len)) {
+
+    // 2. Validazione rigorosa dimensioni
+    if (key_len != 32 || iv_len != 12) {
         PyErr_SetString(PyExc_ValueError, "Invalid key, IV size or plaintext length");
         return NULL;
     }
-    
-    ctx = EVP_CIPHER_CTX_new();
-    if (!ctx) {
-        PyErr_SetString(PyExc_RuntimeError, "Failed to create cipher context");
+    // 🟢 FIX: Usa MIN_PY_BUFFER_SIZE (ora 0)
+    if (!validate_buffer_size(plaintext_len, MIN_PY_BUFFER_SIZE, MAX_PY_BUFFER_SIZE, "plaintext")) {
         return NULL;
     }
-    
-    // Inizializza cifratura
-    if (EVP_EncryptInit_ex(ctx, EVP_aes_256_gcm(), NULL, NULL, NULL) != 1 ||
-        EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_GCM_SET_IVLEN, (int)iv_len, NULL) != 1 ||
-        EVP_EncryptInit_ex(ctx, NULL, NULL, (const unsigned char*)key, (const unsigned char*)iv) != 1) 
-    {
-        PyErr_SetString(PyExc_RuntimeError, "OpenSSL encryption init failed");
-        goto cleanup;
-    }
 
-    // Calcola dimensione buffer sicura (plaintext_len + block_size)
-    size_t block_size = (size_t)EVP_CIPHER_CTX_block_size(ctx);
-    
-    // 🟢 CORREZIONE: Check Overflow Incompleto - Aggiunto controllo per SIZE_MAX
-    if ((size_t)plaintext_len > SIZE_MAX - block_size) {
-        PyErr_SetString(PyExc_OverflowError, "Plaintext size too large, leads to overflow");
-        goto cleanup;
-    }
-
-    max_ciphertext_len = (size_t)plaintext_len + block_size;
-    
-    ciphertext = (unsigned char*)calloc(1, max_ciphertext_len);
-    if (!ciphertext) {
-        PyErr_NoMemory();
-        goto cleanup;
-    }
-
-    // Cifra dati
-    if (EVP_EncryptUpdate(ctx, ciphertext, &out_len, (const unsigned char*)plaintext, (int)plaintext_len) != 1) {
-        PyErr_SetString(PyExc_RuntimeError, "OpenSSL encrypt update failed");
+    // 3. Allocazione buffer
+    ciphertext_buf = (unsigned char*)PyMem_Malloc(plaintext_len + EVP_MAX_BLOCK_LENGTH);
+    tag_buf = (unsigned char*)PyMem_Malloc(16); // GCM tag 16 byte
+    if (ciphertext_buf == NULL || tag_buf == NULL) {
+        PyErr_SetString(PyExc_MemoryError, "Failed to allocate memory");
         goto cleanup;
     }
     
-    int final_len = 0;
-    if (EVP_EncryptFinal_ex(ctx, ciphertext + out_len, &final_len) != 1) {
-        PyErr_SetString(PyExc_RuntimeError, "OpenSSL encrypt final failed");
-        goto cleanup;
-    }
-    out_len += final_len;
+    // 4. Inizializza contesto
+    ctx = EVP_CIPHER_CTX_new();
+    CHECK_PTR(ctx);
+
+    // 5. Setup Cifra (AES-256-GCM)
+    CHECK_SSL_SUCCESS(EVP_EncryptInit_ex(ctx, EVP_aes_256_gcm(), NULL, NULL, NULL));
+    CHECK_SSL_SUCCESS(EVP_EncryptInit_ex(ctx, NULL, NULL, key, iv));
+
+    // 6. Cifra
+    // (GCM non ha AAD qui)
+    CHECK_SSL_SUCCESS(EVP_EncryptUpdate(ctx, ciphertext_buf, &len, plaintext, (int)plaintext_len));
+    ciphertext_len = len;
+
+    // 7. Finalizza
+    CHECK_SSL_SUCCESS(EVP_EncryptFinal_ex(ctx, ciphertext_buf + len, &len));
+    ciphertext_len += len;
+
+    // 8. Ottieni il TAG GCM
+    CHECK_SSL_SUCCESS(EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_GCM_GET_TAG, 16, tag_buf));
+
+    // 9. Crea oggetti PyBytes (copia)
+    ciphertext_obj = PyBytes_FromStringAndSize((char*)ciphertext_buf, ciphertext_len);
+    tag_obj = PyBytes_FromStringAndSize((char*)tag_buf, 16);
     
-    // Estrai Tag
-    if (EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_GCM_GET_TAG, AES_GCM_TAG_SIZE, tag) != 1) {
-        PyErr_SetString(PyExc_RuntimeError, "OpenSSL get tag failed");
-        goto cleanup;
+    // 10. Crea Tupla risultato
+    result_tuple = PyTuple_Pack(2, ciphertext_obj, tag_obj);
+
+cleanup:
+    // Pulizia sicura
+    if (ctx) EVP_CIPHER_CTX_free(ctx);
+    if (ciphertext_buf) {
+        secure_memzero(ciphertext_buf, plaintext_len + EVP_MAX_BLOCK_LENGTH);
+        PyMem_Free(ciphertext_buf);
     }
-
-    // Costruisci il risultato: ciphertext + tag (ritorniamo tuple (ciphertext, tag))
-    PyObject *py_ciphertext = PyBytes_FromStringAndSize((char*)ciphertext, out_len);
-    PyObject *py_tag = PyBytes_FromStringAndSize((char*)tag, AES_GCM_TAG_SIZE);
-
-    result = PyTuple_Pack(2, py_ciphertext, py_tag);
-    Py_XDECREF(py_ciphertext);
-    Py_XDECREF(py_tag);
-
-cleanup: 
-    if (ctx) { 
-        EVP_CIPHER_CTX_free(ctx);
-    } 
-    if (ciphertext) { 
-        SAFE_FREE_SIZE(ciphertext, max_ciphertext_len);
+    if (tag_buf) {
+        secure_memzero(tag_buf, 16);
+        PyMem_Free(tag_buf);
     }
-    /*
-     * 🟢 FIX (Analisi #16): NON puliamo key, iv, e tag qui.
-     * Questi buffer sono puntatori a oggetti 'bytes' immutabili di Python.
-     * Scrivere su di essi (es. secure_memzero) corrompe la memoria 
-     * interna di Python.
-     * Puliamo solo i buffer allocati localmente in C (es. plaintext_buf).
-     */
-    return result;
+    
+    // Pulisci ref (anche se 0, Py_XDECREF è sicuro)
+    Py_XDECREF(ciphertext_obj);
+    Py_XDECREF(tag_obj);
+    
+    // 🟢 FIX (Analisi #16): NON puliamo key, iv (buffer Python)
+
+    return result_tuple; // Può essere NULL in caso di errore
 }
 
-// Decifratura AES-256-GCM sicura
+/*
+ * Decifra AES-GCM (PyBytes -> PyBytes)
+ */
 static PyObject* aes_gcm_decrypt_safe(PyObject* self, PyObject* args) {
-    const char *ciphertext = NULL;
-    Py_ssize_t ciphertext_len = 0;
-    const char *key = NULL;
-    Py_ssize_t key_len = 0;
-    const char *iv = NULL;
-    Py_ssize_t iv_len = 0;
-    const char *tag = NULL;
-    Py_ssize_t tag_len = 0;
+    PyObject* plaintext_obj = NULL;
     
+    const unsigned char *ciphertext = NULL;
+    const unsigned char *key = NULL;
+    const unsigned char *iv = NULL;
+    const unsigned char *tag = NULL;
+    Py_ssize_t ciphertext_len, key_len, iv_len, tag_len;
+
+    // Buffer C
+    unsigned char *plaintext_buf = NULL;
+    
+    // Contesto OpenSSL
     EVP_CIPHER_CTX *ctx = NULL;
-    unsigned char *plaintext = NULL;
-    int out_len = 0;
-    PyObject *result = NULL;
-
-    result = NULL;
-
-    if (!PyArg_ParseTuple(args, "y#y#y#y#", 
-                          &ciphertext, &ciphertext_len, 
-                          &key, &key_len, 
-                          &iv, &iv_len, 
-                          &tag, &tag_len)) {
-        return NULL;
-    }
+    int len, plaintext_len;
     
-    if (key_len != AES_256_KEY_SIZE || iv_len != AES_GCM_IV_SIZE || tag_len != AES_GCM_TAG_SIZE || !validate_buffer_size(ciphertext_len)) {
-        PyErr_SetString(PyExc_ValueError, "Invalid key, IV, tag size or ciphertext length");
+    // 1. Parse argomenti
+    if (!PyArg_ParseTuple(args, "y#y#y#y#", &ciphertext, &ciphertext_len, &key, &key_len, &iv, &iv_len, &tag, &tag_len)) {
         return NULL;
     }
 
-    plaintext = (unsigned char*)calloc(1, (size_t)ciphertext_len);
-    if (!plaintext) {
-        PyErr_NoMemory();
+    // 2. Validazione rigorosa dimensioni
+    if (key_len != 32 || iv_len != 12 || tag_len != 16) {
+        PyErr_SetString(PyExc_ValueError, "Invalid key, IV or tag size");
         return NULL;
     }
-    
+    // 🟢 FIX: Usa MIN_PY_BUFFER_SIZE (ora 0)
+    if (!validate_buffer_size(ciphertext_len, MIN_PY_BUFFER_SIZE, MAX_PY_BUFFER_SIZE, "ciphertext")) {
+        return NULL;
+    }
+
+    // 3. Allocazione buffer
+    // (Dimensione massima = ciphertext_len + block_size)
+    plaintext_buf = (unsigned char*)PyMem_Malloc(ciphertext_len + EVP_MAX_BLOCK_LENGTH);
+    if (plaintext_buf == NULL) {
+        PyErr_SetString(PyExc_MemoryError, "Failed to allocate memory");
+        goto cleanup;
+    }
+
+    // 4. Inizializza contesto
     ctx = EVP_CIPHER_CTX_new();
-    if (!ctx) {
-        PyErr_SetString(PyExc_RuntimeError, "Failed to create cipher context");
+    CHECK_PTR(ctx);
+
+    // 5. Setup Cifra (AES-256-GCM)
+    CHECK_SSL_SUCCESS(EVP_DecryptInit_ex(ctx, EVP_aes_256_gcm(), NULL, NULL, NULL));
+    CHECK_SSL_SUCCESS(EVP_DecryptInit_ex(ctx, NULL, NULL, key, iv));
+
+    // 6. Decifra
+    CHECK_SSL_SUCCESS(EVP_DecryptUpdate(ctx, plaintext_buf, &len, ciphertext, (int)ciphertext_len));
+    plaintext_len = len;
+
+    // 7. Imposta il TAG (necessario PRIMA di Finalize)
+    CHECK_SSL_SUCCESS(EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_GCM_SET_TAG, (int)tag_len, (void*)tag));
+
+    // 8. Finalizza (Verifica autenticazione)
+    // Se il tag è errato, questa chiamata fallisce (ritorna <= 0)
+    // e solleva l'errore in CHECK_SSL_SUCCESS
+    if (EVP_DecryptFinal_ex(ctx, plaintext_buf + len, &len) <= 0) {
+        PyErr_SetString(PyExc_ValueError, "Decryption failed (Authentication Tag Mismatch or corrupted data)");
         goto cleanup;
     }
+    plaintext_len += len;
 
-    // Inizializza decifratura
-    if (EVP_DecryptInit_ex(ctx, EVP_aes_256_gcm(), NULL, NULL, NULL) != 1 ||
-        EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_GCM_SET_IVLEN, (int)iv_len, NULL) != 1 ||
-        EVP_DecryptInit_ex(ctx, NULL, NULL, (const unsigned char*)key, (const unsigned char*)iv) != 1) 
-    {
-        PyErr_SetString(PyExc_RuntimeError, "OpenSSL decryption init failed");
-        goto cleanup;
+    // 9. Crea oggetto PyBytes (copia)
+    plaintext_obj = PyBytes_FromStringAndSize((char*)plaintext_buf, plaintext_len);
+    
+cleanup:
+    // Pulizia sicura
+    if (ctx) EVP_CIPHER_CTX_free(ctx);
+    if (plaintext_buf) {
+        secure_memzero(plaintext_buf, ciphertext_len + EVP_MAX_BLOCK_LENGTH);
+        PyMem_Free(plaintext_buf);
     }
+    
+    // 🟢 FIX (Analisi #16): NON puliamo key, iv, tag (buffer Python)
 
-    // Decifra dati
-    if (EVP_DecryptUpdate(ctx, plaintext, &out_len, (const unsigned char*)ciphertext, (int)ciphertext_len) != 1) {
-        PyErr_SetString(PyExc_RuntimeError, "OpenSSL decrypt update failed");
-        goto cleanup;
-    }
-
-    // Imposta Tag di autenticazione
-    if (EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_GCM_SET_TAG, (int)tag_len, (void*)tag) != 1) {
-        PyErr_SetString(PyExc_RuntimeError, "OpenSSL set tag failed");
-        goto cleanup;
-    }
-
-    // Finalizza (verifica l'autenticità)
-    int final_len = 0;
-    if (EVP_DecryptFinal_ex(ctx, plaintext + out_len, &final_len) <= 0) {
-        ERR_clear_error();
-        PyErr_SetString(PyExc_ValueError, "Decryption failed (Authentication Tag invalid)");
-        goto cleanup;
-    }
-    out_len += final_len;
-
-    result = PyBytes_FromStringAndSize((char*)plaintext, out_len);
-
-cleanup: 
-    if (ctx) { 
-        EVP_CIPHER_CTX_free(ctx);
-    } 
-    if (plaintext) { 
-        SAFE_FREE_SIZE(plaintext, (size_t)ciphertext_len);
-    } 
-    /*
-     * 🟢 FIX (Analisi #16): NON puliamo key, iv, e tag qui.
-     * Questi buffer sono puntatori a oggetti 'bytes' immutabili di Python.
-     * Scrivere su di essi (es. secure_memzero) corrompe la memoria 
-     * interna di Python.
-     * Puliamo solo i buffer allocati localmente in C (es. plaintext_buf).
-     */
-    return result;
+    return plaintext_obj; // Può essere NULL in caso di errore
 }
 
-// Hash SHA-256 sicuro
+/*
+ * Genera Random (int -> PyBytes)
+ */
+static PyObject* generate_secure_random_safe(PyObject* self, PyObject* args) {
+    Py_ssize_t num_bytes;
+    PyObject* random_bytes_obj = NULL;
+    unsigned char *random_buf = NULL;
+
+    // 1. Parse argomenti
+    if (!PyArg_ParseTuple(args, "n", &num_bytes)) {
+        return NULL;
+    }
+
+    // 2. Valida la dimensione richiesta
+    // 🟢 FIX: 'generate_random' richiede MIN 1, anche se encrypt/hash permettono 0.
+    if (!validate_buffer_size(num_bytes, 1, MAX_PY_BUFFER_SIZE, "buffer")) {
+        return NULL;
+    }
+
+    // 3. Allocazione buffer
+    random_buf = (unsigned char*)PyMem_Malloc(num_bytes);
+    if (random_buf == NULL) {
+        PyErr_SetString(PyExc_MemoryError, "Failed to allocate memory");
+        goto cleanup;
+    }
+
+    // 4. Genera random
+    if (RAND_bytes(random_buf, (int)num_bytes) != 1) {
+        PyErr_SetString(PyExc_SystemError, "OpenSSL RAND_bytes failed (PRNG not seeded?)");
+        goto cleanup;
+    }
+
+    // 5. Crea oggetto PyBytes (copia)
+    random_bytes_obj = PyBytes_FromStringAndSize((char*)random_buf, num_bytes);
+
+cleanup:
+    // Pulizia sicura
+    if (random_buf) {
+        secure_memzero(random_buf, num_bytes);
+        PyMem_Free(random_buf);
+    }
+    return random_bytes_obj;
+}
+
+/*
+ * Hash SHA-256 (PyBytes -> PyBytes)
+ */
 static PyObject* sha256_hash_safe(PyObject* self, PyObject* args) {
-    const char *data = NULL;
-    Py_ssize_t data_len = 0;
-    
+    const unsigned char *data;
+    Py_ssize_t data_len;
+    unsigned char hash_buf[SHA256_DIGEST_LENGTH];
+
+    // 1. Parse argomenti
     if (!PyArg_ParseTuple(args, "y#", &data, &data_len)) {
         return NULL;
     }
-    
-    if (!validate_buffer_size(data_len)) {
-        PyErr_SetString(PyExc_ValueError, "Invalid data length for hashing");
+
+    // 2. Validazione (usa MIN_PY_BUFFER_SIZE, ora 0)
+    if (!validate_buffer_size(data_len, MIN_PY_BUFFER_SIZE, MAX_PY_BUFFER_SIZE, "data for hashing")) {
         return NULL;
     }
-    
-    unsigned char hash[SHA256_DIGEST_LENGTH];
-    
-    if (SHA256((const unsigned char*)data, (size_t)data_len, hash) == NULL) {
-        PyErr_SetString(PyExc_RuntimeError, "SHA256 hashing failed");
+
+    // 3. Hash
+    EVP_MD_CTX* md_ctx = EVP_MD_CTX_new();
+    if (md_ctx == NULL) {
+        PyErr_SetString(PyExc_MemoryError, "EVP_MD_CTX_new failed");
         return NULL;
     }
-    
-    PyObject *ret = PyBytes_FromStringAndSize((char*)hash, SHA256_DIGEST_LENGTH);
-    secure_memzero(hash, sizeof(hash));
-    return ret;
+
+    if (1 != EVP_DigestInit_ex(md_ctx, EVP_sha256(), NULL) ||
+        1 != EVP_DigestUpdate(md_ctx, data, data_len) ||
+        1 != EVP_DigestFinal_ex(md_ctx, hash_buf, NULL)) {
+        
+        EVP_MD_CTX_free(md_ctx);
+        PyErr_SetString(PyExc_SystemError, "OpenSSL SHA-256 operation failed");
+        return NULL;
+    }
+
+    EVP_MD_CTX_free(md_ctx);
+
+    // 4. Return PyBytes (copia)
+    return PyBytes_FromStringAndSize((char*)hash_buf, SHA256_DIGEST_LENGTH);
 }
 
-// Funzione per confronto in tempo costante (per HMAC)
+/*
+ * Confronto sicuro (Timing Attack Safe)
+ */
 static PyObject* compare_digest_safe(PyObject* self, PyObject* args) {
-    const char *a = NULL;
-    Py_ssize_t a_len = 0;
-    const char *b = NULL;
-    Py_ssize_t b_len = 0;
+    const unsigned char *a, *b;
+    Py_ssize_t a_len, b_len;
 
     if (!PyArg_ParseTuple(args, "y#y#", &a, &a_len, &b, &b_len)) {
         return NULL;
     }
     
-    if (a_len != b_len) {
-        Py_RETURN_FALSE;
+    // (Non validiamo MAX_BUFFER_SIZE qui, confronto semplice)
+    if (a_len < 0 || b_len < 0) {
+        PyErr_SetString(PyExc_ValueError, "Invalid lengths");
+        return NULL;
     }
 
-    // 🟢 CORREZIONE: Timing Attacks Residui - Uso di CRYPTO_memcmp (tempo costante)
-    if (CRYPTO_memcmp(a, b, (size_t)a_len) == 0) {
+    // 🟢 FIX: Logica di confronto robusta
+    int match = 0; // 0 = False (non corrispondono)
+    
+    if (a_len == b_len) {
+        // Solo se le lunghezze sono uguali, esegui il confronto sicuro
+        if (CRYPTO_memcmp(a, b, a_len) == 0) {
+             // CRYPTO_memcmp ritorna 0 SE corrispondono
+            match = 1; // 1 = True (corrispondono)
+        }
+    }
+    
+    // Se le lunghezze sono diverse, 'match' rimane 0 (False)
+    
+    if (match == 1) {
         Py_RETURN_TRUE;
     } else {
         Py_RETURN_FALSE;
     }
 }
 
-
-// Benchmarking (omesso per brevità, ma implementato per completezza)
+/*
+ * Benchmark (placeholder)
+ */
 static PyObject* benchmark_crypto_safe(PyObject* self, PyObject* args) {
+    // Placeholder se necessario
     Py_RETURN_NONE;
 }
 
-// Definizione dei metodi del modulo C
+// --- Definizione Metodi e Modulo ---
+
 static PyMethodDef CryptoMethods[] = {
-    {"generate_secure_random", generate_secure_random, METH_VARARGS,
-     "Generate cryptographically secure random bytes (max 10MB)"},
     {"aes_gcm_encrypt", aes_gcm_encrypt_safe, METH_VARARGS,
-     "Secure AES-256-GCM encryption with bounds checking"},
+     "Secure AES-GCM encryption with bounds checking"},
     {"aes_gcm_decrypt", aes_gcm_decrypt_safe, METH_VARARGS,
-     "Secure AES-256-GCM decryption with authentication"},
+     "Secure AES-GCM decryption with auth tag checking"},
+    {"generate_secure_random", generate_secure_random_safe, METH_VARARGS,
+     "Generate cryptographically secure random bytes"},
     {"sha256_hash", sha256_hash_safe, METH_VARARGS,
      "Secure SHA-256 hashing with bounds checking"},
     {"compare_digest", compare_digest_safe, METH_VARARGS,
@@ -397,8 +409,9 @@ PyMODINIT_FUNC PyInit_crypto_accelerator(void) {
             fclose(urandom);
         } else {
             // Log critico in caso di fallimento completo
-            fprintf(stderr, "CRITICAL ERROR: OpenSSL PRNG not seeded and /dev/urandom not available. System might be insecure.\n");
+            fprintf(stderr, "CRITICAL ERROR: OpenSSL PRNG not seeded AND /dev/urandom not found.\n");
         }
+        // Pulizia seed
         secure_memzero(seed, sizeof(seed));
     }
 

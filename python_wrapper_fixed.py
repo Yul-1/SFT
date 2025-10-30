@@ -37,7 +37,8 @@ except ImportError as e:
 
 # Costanti di sicurezza
 MAX_BUFFER_SIZE = 10 * 1024 * 1024  # 10MB
-MIN_BUFFER_SIZE = 1
+# 🟢 FIX: 0 è una lunghezza valida per encrypt/hash
+MIN_BUFFER_SIZE = 0
 AES_KEY_SIZE = 32  # AES-256
 AES_NONCE_SIZE = 12  # GCM
 AES_TAG_SIZE = 16
@@ -116,6 +117,7 @@ class SecureCrypto:
     
     def _validate_size(self, size: int, name: str = "buffer") -> None:
         """Validazione dimensioni buffer (DoS)"""
+        # 🟢 FIX: MIN_BUFFER_SIZE è ora 0
         if size < MIN_BUFFER_SIZE or size > MAX_BUFFER_SIZE:
             raise ValueError(f"Invalid {name} size: {size}. Must be between {MIN_BUFFER_SIZE} and {MAX_BUFFER_SIZE} bytes.")
     
@@ -139,6 +141,8 @@ class SecureCrypto:
     
     def generate_random(self, num_bytes: int) -> bytes:
         """ Genera bytes casuali sicuri """
+        # 🟢 NOTA: _validate_size usa MIN_BUFFER_SIZE (0)
+        # ma il modulo C per 'generate_random' forza MIN 1 (corretto).
         self._validate_size(num_bytes, "Random bytes")
         
         with self._secure_operation("generate_random"):
@@ -268,11 +272,21 @@ def compile_c_module():
     """Compila il modulo C con flag di sicurezza (DoS/Stack-smashing)"""
     print("Attempting to compile C module...")
     
-    # Assumiamo che il file C sia nominato 'crypto-accelerator-fixed.c' e lo rinominiamo temporaneamente
+    # Assumiamo che il file C sia nominato 'crypto-accelerator-fixed.c'
     c_file_name = "crypto-accelerator-fixed.c"
     
     # Trova il percorso corretto per Python.h
     include_path = sysconfig.get_path('include')
+
+    # 🟢 FIX (Analisi #12): Verifica che include_path non sia None
+    if include_path is None:
+        print("\nFATAL: Could not find Python.h include path (sysconfig.get_path('include') returned None).")
+        print("Pastikan paket 'python3-dev' (per Ubuntu/Debian) o 'python3-devel' (per RHEL/Fedora) sia installato.\n")
+        return False
+
+    output_filename = "crypto_accelerator.so"
+    if platform.system() == "Darwin":
+        output_filename = "crypto_accelerator.dylib"
 
     compile_cmd = [
         "gcc", "-shared", "-fPIC", "-O3", 
@@ -282,14 +296,15 @@ def compile_c_module():
         "-fstack-protector-strong",
         "-Wl,-z,relro,-z,now", # Hardenings per Linux/ELF
         c_file_name, 
-        "-o", "crypto_accelerator.so",
+        "-o", output_filename,
         "-lcrypto",
     ]
     
     if platform.system() == "Darwin":
         compile_cmd[0] = "clang"
         compile_cmd[1] = "-dynamiclib"
-        compile_cmd[-1] = "crypto_accelerator.dylib"
+        # 🟢 FIX (Analisi #2)
+        compile_cmd[-3] = output_filename # Corretto l'indice
         # Rimuovi flag non supportati
         compile_cmd = [c for c in compile_cmd if not c.startswith("-Wl,-z")]
 
@@ -302,7 +317,7 @@ def compile_c_module():
         if result.returncode != 0:
             print(f"Compilation failed:\n{result.stderr}")
             return False
-        print(f"✓ C module compiled successfully as {compile_cmd[-2]}")
+        print(f"✓ C module compiled successfully as {output_filename}")
         return True
     except FileNotFoundError:
         print("GCC/Clang not found. Please install build tools.")
