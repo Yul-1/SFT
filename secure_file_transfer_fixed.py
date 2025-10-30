@@ -182,6 +182,25 @@ class SecureKeyManager:
                 if entry['id'] == key_id:
                     return entry['key']
             return None
+    def add_external_key_to_cache(self, key: bytes, key_id: str):
+        """🟢 FIX (Analisi #7): Aggiunge una chiave esterna alla cache 'previous_keys'."""
+        with self._lock:
+            # Controlla se esiste già per evitare duplicati (improbabile)
+            if self.get_key_by_id(key_id):
+                return
+                
+            entry = {
+                'key': key,
+                'id': key_id,
+                'timestamp': datetime.now()
+            }
+            if len(self.previous_keys) >= self.previous_keys.maxlen:
+                old = self.previous_keys.popleft()
+                # (Questa chiamata usa la versione corretta di _clear_memory 
+                #  che gestisce 'bytes' non facendo nulla)
+                _clear_memory(old.get('key'))
+            
+            self.previous_keys.append(entry)
         
     def generate_session_key(self) -> Tuple[bytes, str]:
         """Genera chiave di sessione e la ruota in modo sicuro"""
@@ -302,9 +321,21 @@ class SecureProtocol:
         """Sanitizza filename per prevenire path traversal"""
         filename = os.path.basename(filename)
         filename = re.sub(r'[^\w\s\-\.]', '', filename)
+        
+        # 🟢 FIX (Analisi #5): Corregge la logica di troncamento
         if len(filename) > 255:
             name, ext = os.path.splitext(filename)
-            filename = name[:240] + ext
+            
+            # Limita l'estensione (es. max 20 caratteri + punto)
+            if len(ext) > 21:
+                ext = ext[:21]
+                
+            # Calcola la lunghezza massima del nome
+            max_name_len = 255 - len(ext)
+            name = name[:max_name_len]
+            
+            filename = name + ext
+            
         reserved = ['CON', 'PRN', 'AUX', 'NUL', 'COM1', 'LPT1']
         name_upper = filename.upper().split('.')[0]
         if name_upper in reserved:
@@ -320,6 +351,12 @@ class SecureProtocol:
             else:
                 # Se la chiave esterna è fornita, deriviamo un ID deterministico a partire dalla chiave
                 key_id = hashlib.sha256(key).hexdigest()[:16]
+                
+                # 🟢 FIX (Analisi #7): Caching chiave esterna
+                # Aggiungila alla cache se non presente,
+                # così 'decrypt_data' può trovarla.
+                if self.key_manager.get_key_by_id(key_id) is None:
+                    self.key_manager.add_external_key_to_cache(key, key_id)
         
         if not key:
             raise ValueError("No encryption key available")
@@ -668,10 +705,6 @@ class SecureFileTransferNode:
             # Usciamo *prima* di incrementare il _connection_counter
             return
 
-        # Spostato DOPO il check del rate-limit
-        with self._counter_lock:
-            self._connection_counter += 1
-        
         # Stato del trasferimento per questa connessione
         current_transfer: Dict[str, Any] = {}
         
@@ -680,6 +713,11 @@ class SecureFileTransferNode:
         protocol: Optional[SecureProtocol] = None
         
         try:
+            # 🟢 FIX (Analisi #8): Spostato l'incremento all'interno
+            # del 'try' per garantire che 'finally' lo catturi sempre.
+            with self._counter_lock:
+                self._connection_counter += 1
+
             # 🟢 INIZIO MODIFICA: Creazione stato locale per-thread
             # Ogni thread ha il suo KeyManager, la sua coda Anti-Replay, e il suo Protocollo.
             # Questo ISOLA le chiavi di sessione e risolve la race condition.

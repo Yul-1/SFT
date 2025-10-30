@@ -378,7 +378,19 @@ PyMODINIT_FUNC PyInit_crypto_accelerator(void) {
         unsigned char seed[32];
         FILE *urandom = fopen("/dev/urandom", "rb"); // Tenta di leggere da /dev/urandom
         if (urandom) {
-            if (fread(seed, 1, sizeof(seed), urandom) == sizeof(seed)) {
+            // 🟢 FIX (Analisi #11): Loop per garantire lettura completa
+            size_t total_read = 0;
+            while (total_read < sizeof(seed)) {
+                size_t read_now = fread(seed + total_read, 1, sizeof(seed) - total_read, urandom);
+                if (read_now == 0) {
+                    // EOF o errore prima di riempire il seed
+                    fprintf(stderr, "CRITICAL ERROR: Failed to read sufficient bytes from /dev/urandom\n");
+                    break;
+                }
+                total_read += read_now;
+            }
+            
+            if (total_read == sizeof(seed)) {
                 RAND_seed(seed, sizeof(seed));
                 fprintf(stderr, "WARNING: OpenSSL PRNG manually seeded from /dev/urandom\n");
             }

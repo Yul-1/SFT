@@ -108,8 +108,9 @@ def test_sanitize_long_filename(protocol_instance):
     long_name = "a" * 300 + ".txt"
     sanitized = protocol_instance.sanitize_filename(long_name)
     assert len(sanitized) <= 255
-    # La logica taglia a 240 + ext
-    assert sanitized == ("a" * 240) + ".txt"
+    # 🟢 FIX (Analisi #5 Test): La nuova logica (corretta)
+    # tronca a (255 - len(ext)), che è 251.
+    assert sanitized == ("a" * 251) + ".txt"
 
 
 ### 3. Test SecureKeyManager
