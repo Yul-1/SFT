@@ -3,6 +3,7 @@
 Sistema di Trasferimento File Cifrato con Sicurezza Rafforzata
 Versione corretta con tutte le vulnerabilità risolte
 (Refactoring v2.5: Thread-safe state-per-thread)
+(Refactoring v2.6: Aggiunta Bidirezionalità)
 """
 
 import socket
@@ -57,7 +58,9 @@ MESSAGE_SCHEMA = {
     "properties": {
         "type": {"type": "string", "enum": [
             "key_rotation", "ping", "pong", "auth",
-            "file_header", "file_resume_ack", "file_complete", "file_ack"
+            "file_header", "file_resume_ack", "file_complete", "file_ack",
+            # 🟢 FASE 1: Definizione del Protocollo
+            "list_files_request", "list_files_response", "download_file_request"
         ]},
         "version": {"type": "string"},
         "timestamp": {"type": "string"},
@@ -883,6 +886,73 @@ class SecureFileTransferNode:
                         conn.sendall(ack_packet) # USA conn
                         current_transfer = {}
 
+                    # 🟢 FASE 2: Implementazione Logica Server (List)
+                    elif msg_type == 'list_files_request':
+                        logger.info(f"[{thread_name}] Received list_files_request from {host}")
+                        file_list = []
+                        try:
+                            for f in OUTPUT_DIR.glob('*'):
+                                if f.is_file():
+                                    file_list.append({'name': f.name, 'size': f.stat().st_size})
+                            
+                            response_packet = protocol._create_json_packet(
+                                'list_files_response',
+                                {'files': file_list}
+                            )
+                        except Exception as e:
+                            logger.error(f"[{thread_name}] Failed to list directory: {e}")
+                            response_packet = protocol._create_json_packet(
+                                'list_files_response',
+                                {'files': [], 'error': 'Failed to list directory'}
+                            )
+                        conn.sendall(response_packet)
+                    
+                    # 🟢 FASE 2: Implementazione Logica Server (Download)
+                    elif msg_type == 'download_file_request':
+                        remote_filename = payload['payload'].get('filename')
+                        logger.info(f"[{thread_name}] Received download_file_request for {remote_filename}")
+                        
+                        if not remote_filename:
+                             err_packet = protocol._create_json_packet('file_ack', {'error': 'Missing filename'})
+                             conn.sendall(err_packet)
+                             continue
+
+                        # --- CRITICAL: Path Traversal Check ---
+                        sanitized_name = protocol.sanitize_filename(remote_filename)
+                        target_path = (OUTPUT_DIR / sanitized_name).resolve()
+                        resolved_output_dir = OUTPUT_DIR.resolve()
+                        
+                        is_safe = False
+                        try:
+                            # Metodo preferito (Python 3.9+)
+                            is_safe = target_path.is_relative_to(resolved_output_dir)
+                        except AttributeError:
+                            # Fallback per Python < 3.9
+                            is_safe = str(target_path).startswith(str(resolved_output_dir))
+                        
+                        if not target_path.is_file() or not is_safe:
+                            logger.warning(f"[{thread_name}] Path Traversal attempt or file not found for: {remote_filename}")
+                            err_packet = protocol._create_json_packet(
+                                'file_ack', 
+                                {'filename': remote_filename, 'error': 'File not found or access denied'}
+                            )
+                            conn.sendall(err_packet)
+                            continue
+                        
+                        # --- Fine Controllo Sicurezza ---
+                        
+                        logger.info(f"[{thread_name}] Starting send logic for {sanitized_name} to {host}")
+                        # Avvia la logica di invio (bloccante per questo thread)
+                        try:
+                            # 🟢 REFACTOR: Chiama la logica di invio unificata
+                            # Passa il socket e il protocollo di *questo* thread
+                            self._internal_send_file_logic(conn, protocol, target_path, None)
+                        except Exception as e:
+                            logger.error(f"[{thread_name}] Failed to send file {sanitized_name}: {e}")
+                            # Errore già gestito/loggato da _internal_send_file_logic
+                            break # Interrompi il loop, la connessione è probabilmente morta
+
+
                 # 2.3. Gestione Pacchetti DATA (Chunks)
                 elif pkt_type == 'data':
                     if not current_transfer:
@@ -1007,21 +1077,31 @@ class SecureFileTransferNode:
             self.shutdown() # Chiude se l'handshake fallisce
             raise # Rilancia l'eccezione
 
-    def send_file(self, local_filepath: str, progress_callback: Optional[callable] = None):
-        """Invia un file al server connesso (LOGICA CLIENT)"""
-        if not self.running or not self.peer_socket:
-            raise ConnectionError("Not connected to server.")
+    # 🟢 FASE 2: REFACTOR (Sposta logica da send_file a helper)
+    def _internal_send_file_logic(
+        self, 
+        sock: socket.socket, 
+        protocol: SecureProtocol, 
+        local_path: Path, 
+        progress_callback: Optional[callable] = None
+    ):
+        """
+        Logica di invio file interna, usata sia dal client (upload) 
+        che dal server (download).
+        """
         
-        local_path = Path(local_filepath)
-        if not local_path.exists() or not local_path.is_file():
-            raise FileNotFoundError(f"File not found: {local_filepath}")
-        
+        # Determina client_id per il parsing dei pacchetti di risposta
+        try:
+            client_id = str(sock.getpeername())
+        except Exception:
+            client_id = "unknown_peer"
+
         try:
             total_size = local_path.stat().st_size
-            # 🟢 MODIFICA: Usa self.protocol (logica Client)
-            filename = self.protocol.sanitize_filename(local_path.name)
-            # 🟢 FIX (Analisi #10): Calcola hash
-            logger.info(f"Calculating SHA-256 hash for {filename}...")
+            filename = protocol.sanitize_filename(local_path.name)
+            
+            # Calcola hash
+            logger.info(f"[{client_id}] Calculating SHA-256 hash for {filename}...")
             file_hash_obj = hashlib.sha256()
             with local_path.open('rb') as f_hash:
                 while chunk := f_hash.read(BUFFER_SIZE * 10):
@@ -1029,39 +1109,33 @@ class SecureFileTransferNode:
             file_hash = file_hash_obj.hexdigest()
 
             # 1. Invia 'file_header'
-            # 1. Invia 'file_header'
-            logger.info(f"Sending file header for {filename} ({total_size} bytes)")
+            logger.info(f"[{client_id}] Sending file header for {filename} ({total_size} bytes)")
             header_payload = {
                 'filename': filename, 
                 'total_size': total_size, 
                 'hash': file_hash,
-                'timestamp': datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ') # <-- RIGA AGGIUNTA
-            }           # 🟢 MODIFICA: Usa self.protocol (logica Client)
-            header_packet = self.protocol._create_json_packet('file_header', header_payload)
-            self.peer_socket.sendall(header_packet)
+                'timestamp': datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+            }
+            header_packet = protocol._create_json_packet('file_header', header_payload)
+            sock.sendall(header_packet)
             self.transfer_stats['sent'] += 1
 
             # 2. Attendi ACK/Resume
-            # 🟢 INIZIO REFACTORING THREAD-SAFE (Client)
-            # (NON passa istanze, usa il fallback a self.*)
-            pkt_type, response, _ = self._read_and_parse_packet(self.peer_socket, self.peer_address)
-            # 🟢 FINE REFACTORING THREAD-SAFE (Client)
+            pkt_type, response, _ = self._read_and_parse_packet(sock, client_id, protocol)
             self.transfer_stats['received'] += 1
             
             if pkt_type != 'json' or response.get('type') != 'file_resume_ack':
-                raise Exception(f"Server did not acknowledge file header. Got: {response.get('type')}")
+                error = response.get('payload', {}).get('error', 'Unknown error')
+                raise Exception(f"Peer did not acknowledge file header. Got: {response.get('type')}. Error: {error}")
                 
             start_offset = response['payload'].get('offset', 0)
             if start_offset > total_size:
-                logger.error(f"Server offset {start_offset} is larger than file size {total_size}. Aborting.")
-                raise Exception("Invalid resume offset from server.")
+                logger.error(f"[{client_id}] Peer offset {start_offset} is larger than file size {total_size}. Aborting.")
+                raise Exception("Invalid resume offset from peer.")
             
-            logger.info(f"Server ACK. Starting upload from offset: {start_offset}")
+            logger.info(f"[{client_id}] Peer ACK. Starting upload from offset: {start_offset}")
 
             # 3. Invia Chunks
-            
-            # 🟢 INIZIO MODIFICA (Finding #2 - Memory Remanence)
-            # Usa un bytearray mutabile per la pulizia della memoria
             chunk_ba = bytearray(BUFFER_SIZE)
             chunk_view = memoryview(chunk_ba)
 
@@ -1071,75 +1145,264 @@ class SecureFileTransferNode:
                     current_offset = start_offset
                     
                     while self.running and current_offset < total_size:
-                        # Legge un chunk nel bytearray
                         read_len = f.readinto(chunk_ba)
                         
                         if read_len == 0:
-                            # 🟢 FIX (Analisi #10): EOF prematuro!
                             if current_offset < total_size:
-                                logger.error(f"EOF reached prematurely at {current_offset} (expected {total_size}). File modified?")
-                                # Invia un errore (best-effort)
-                                err_packet = self.protocol._create_json_packet(
+                                logger.error(f"[{client_id}] EOF reached prematurely at {current_offset} (expected {total_size}). File modified?")
+                                err_packet = protocol._create_json_packet(
                                     'file_complete', 
                                     {'filename': filename, 'error': 'File read error (EOF)'}
                                 )
-                                self.peer_socket.sendall(err_packet)
-                            break # Esci dal loop se read_len è 0
+                                sock.sendall(err_packet)
+                            break 
                         
-                        # Se abbiamo letto meno del buffer, usa una memoryview
                         if read_len < BUFFER_SIZE:
                             chunk_to_send = chunk_view[:read_len]
                         else:
-                            chunk_to_send = chunk_ba # Usa l'intero bytearray
+                            chunk_to_send = chunk_ba
                         
-                        # 🟢 MODIFICA: Usa self.protocol (logica Client)
-                        data_packet = self.protocol._create_data_packet(chunk_to_send, current_offset)
-                        self.peer_socket.sendall(data_packet)
+                        data_packet = protocol._create_data_packet(chunk_to_send, current_offset)
+                        sock.sendall(data_packet)
                         self.transfer_stats['sent'] += 1
                         
                         current_offset += read_len
                         
                         if progress_callback:
                             try:
-                                # Esegui il callback
                                 progress_callback(filename, current_offset, total_size)
                             except Exception as cb_e:
                                 logger.warning(f"Progress callback failed: {cb_e}")
             finally:
-                # Assicura la pulizia del buffer del chunk
                 _clear_memory(chunk_ba)
-            # 🟢 FINE MODIFICA
                 
             if not self.running:
-                logger.warning("Transfer interrupted during chunk sending.")
+                logger.warning(f"[{client_id}] Transfer interrupted during chunk sending.")
                 return
 
             # 4. Invia 'file_complete'
-            logger.info(f"File send complete for {filename}. Sending 'file_complete' message.")
-            # 🟢 MODIFICA: Usa self.protocol (logica Client)
-            complete_packet = self.protocol._create_json_packet(
+            logger.info(f"[{client_id}] File send complete for {filename}. Sending 'file_complete' message.")
+            complete_packet = protocol._create_json_packet(
                 'file_complete', 
                 {'filename': filename, 'total_size': total_size}
             )
-            self.peer_socket.sendall(complete_packet)
+            sock.sendall(complete_packet)
             self.transfer_stats['sent'] += 1
             
             # 5. Attendi ACK finale
-            # 🟢 INIZIO REFACTORING THREAD-SAFE (Client)
-            # (NON passa istanze, usa il fallback a self.*)
-            pkt_type, response, _ = self._read_and_parse_packet(self.peer_socket, self.peer_address)
-            # 🟢 FINE REFACTORING THREAD-SAFE (Client)
+            pkt_type, response, _ = self._read_and_parse_packet(sock, client_id, protocol)
             self.transfer_stats['received'] += 1
             if pkt_type == 'json' and response.get('type') == 'file_ack':
-                logger.info(f"Server acknowledged file_complete for {filename}.")
+                error = response.get('payload', {}).get('error')
+                if error:
+                    logger.error(f"[{client_id}] Peer reported error in final ACK: {error}")
+                else:
+                    logger.info(f"[{client_id}] Peer acknowledged file_complete for {filename}.")
             else:
-                logger.warning(f"Did not receive final file_ack. Got: {response.get('type')}")
+                logger.warning(f"[{client_id}] Did not receive final file_ack. Got: {response.get('type')}")
 
         except Exception as e:
-            logger.error(f"Error during send_file: {e}", exc_info=True)
+            logger.error(f"[{client_id}] Error during internal_send_file_logic: {e}", exc_info=True)
             self.transfer_stats['errors'] += 1
             raise # Rilancia l'eccezione
+
+    def send_file(self, local_filepath: str, progress_callback: Optional[callable] = None):
+        """Invia un file al server connesso (LOGICA CLIENT - Upload)"""
+        if not self.running or not self.peer_socket:
+            raise ConnectionError("Not connected to server.")
+        
+        local_path = Path(local_filepath)
+        if not local_path.exists() or not local_path.is_file():
+            raise FileNotFoundError(f"File not found: {local_filepath}")
+        
+        # 🟢 REFACTOR: Chiama la logica unificata
+        self._internal_send_file_logic(
+            self.peer_socket, 
+            self.protocol, 
+            local_path, 
+            progress_callback
+        )
             
+    # 🟢 FASE 1: Implementa Nuovi Metodi Client (List)
+    def list_files(self) -> list:
+        """Richiede l'elenco dei file remoti (LOGICA CLIENT)"""
+        if not self.running or not self.peer_socket:
+            raise ConnectionError("Not connected to server.")
+        
+        logger.info("Requesting remote file list...")
+        try:
+            # 1. Invia 'list_files_request'
+            request_packet = self.protocol._create_json_packet('list_files_request', {})
+            self.peer_socket.sendall(request_packet)
+            self.transfer_stats['sent'] += 1
+
+            # 2. Attendi 'list_files_response'
+            pkt_type, response, _ = self._read_and_parse_packet(self.peer_socket, self.peer_address)
+            self.transfer_stats['received'] += 1
+
+            if pkt_type == 'json' and response.get('type') == 'list_files_response':
+                payload = response['payload']
+                if 'error' in payload:
+                    logger.error(f"Server error listing files: {payload['error']}")
+                    return []
+                logger.info(f"Received file list ({len(payload.get('files', []))} files).")
+                return payload.get('files', [])
+            else:
+                logger.error(f"Invalid response from server for list_files. Got: {response.get('type')}")
+                return []
+        except Exception as e:
+            logger.error(f"Error during list_files: {e}", exc_info=True)
+            self.transfer_stats['errors'] += 1
+            raise
+            
+    # 🟢 FASE 1: Implementa Nuovi Metodi Client (Download)
+    def download_file(self, remote_filename: str, local_save_path: Path, progress_callback: Optional[callable] = None):
+        """Richiede un file dal server (LOGICA CLIENT - Download)"""
+        if not self.running or not self.peer_socket:
+            raise ConnectionError("Not connected to server.")
+        
+        logger.info(f"Requesting download for '{remote_filename}' to '{local_save_path}'")
+        
+        # Stato del trasferimento (lato ricezione)
+        current_transfer: Dict[str, Any] = {}
+        
+        try:
+            # 1. Invia 'download_file_request'
+            request_packet = self.protocol._create_json_packet(
+                'download_file_request', 
+                {'filename': remote_filename}
+            )
+            self.peer_socket.sendall(request_packet)
+            self.transfer_stats['sent'] += 1
+            
+            # 2. Inizia la state machine di ricezione (replica _handle_connection)
+            while self.running:
+                # 2.1. Leggi il prossimo pacchetto
+                pkt_type, payload, offset = self._read_and_parse_packet(self.peer_socket, self.peer_address)
+                self.transfer_stats['received'] += 1
+                
+                # 2.2. Gestione Pacchetti JSON
+                if pkt_type == 'json':
+                    msg_type = payload.get('type')
+                    
+                    # Server invia 'file_header'
+                    if msg_type == 'file_header':
+                        filename = self.protocol.sanitize_filename(payload['payload']['filename'])
+                        total_size = int(payload['payload']['total_size'])
+                        file_hash = payload['payload'].get('hash')
+                        
+                        # Assicura che la directory esista
+                        local_save_path.parent.mkdir(parents=True, exist_ok=True)
+                        
+                        current_offset = 0
+                        mode = 'wb'
+                        
+                        # Logica Resume
+                        if local_save_path.exists():
+                            current_offset = local_save_path.stat().st_size
+                            if current_offset < total_size:
+                                logger.info(f"Resuming download {filename} from offset {current_offset}")
+                                mode = 'ab'
+                            else:
+                                logger.info(f"File {filename} already complete. Overwriting.")
+                                current_offset = 0
+                        
+                        file_handle = local_save_path.open(mode)
+                        current_transfer = {'path': local_save_path, 'handle': file_handle, 'total': total_size, 'hash': file_hash}
+                        
+                        # Invia ACK
+                        ack_packet = self.protocol._create_json_packet(
+                            'file_resume_ack',
+                            {'filename': filename, 'offset': current_offset}
+                        )
+                        self.peer_socket.sendall(ack_packet)
+                        self.transfer_stats['sent'] += 1
+                    
+                    # Server invia 'file_complete'
+                    elif msg_type == 'file_complete':
+                        if not current_transfer:
+                            logger.warning("Received 'file_complete' without active transfer.")
+                            continue
+                        
+                        filename = payload['payload']['filename']
+                        logger.info(f"Download complete for {filename}. Verifying...")
+                        current_transfer['handle'].close()
+
+                        # Verifica Hash
+                        final_hash_ok = False
+                        client_hash = current_transfer.get('hash')
+                        file_path = current_transfer.get('path')
+
+                        if client_hash and file_path and file_path.exists():
+                            try:
+                                local_hash_obj = hashlib.sha256()
+                                with file_path.open('rb') as f_verify:
+                                    while chunk := f_verify.read(BUFFER_SIZE * 10):
+                                        local_hash_obj.update(chunk)
+                                calculated_hash = local_hash_obj.hexdigest()
+
+                                if hmac.compare_digest(calculated_hash, client_hash):
+                                    logger.info("Hash verification SUCCESS")
+                                    final_hash_ok = True
+                                else:
+                                    logger.error(f"HASH MISMATCH. Expected: {client_hash}, Got: {calculated_hash}")
+                            except Exception as e:
+                                logger.error(f"Failed to verify hash: {e}")
+                        else:
+                            logger.warning("Skipping hash check (no hash provided or file missing).")
+                            final_hash_ok = True # OK se saltato
+
+                        # Invia ACK finale
+                        ack_payload = {'filename': filename}
+                        if not final_hash_ok:
+                            ack_payload['error'] = 'Hash mismatch on client'
+                        ack_packet = self.protocol._create_json_packet('file_ack', ack_payload)
+                        self.peer_socket.sendall(ack_packet)
+                        self.transfer_stats['sent'] += 1
+                        
+                        logger.info(f"File {filename} successfully downloaded to {file_path}.")
+                        current_transfer = {}
+                        break # Fine del download
+
+                    # Server invia 'file_ack' (spesso per errori)
+                    elif msg_type == 'file_ack':
+                        error = payload.get('payload', {}).get('error')
+                        if error:
+                            logger.error(f"Server sent an error: {error}")
+                            if current_transfer.get('handle'):
+                                current_transfer['handle'].close()
+                            current_transfer = {}
+                            break # Interrompi in caso di errore
+                        
+                # 2.3. Gestione Pacchetti DATA
+                elif pkt_type == 'data':
+                    if not current_transfer:
+                        logger.warning("Received data chunk without active transfer. Discarding.")
+                        continue
+                        
+                    handle = current_transfer['handle']
+                    handle.seek(offset)
+                    handle.write(payload)
+                    
+                    current_bytes = offset + len(payload)
+                    if progress_callback:
+                        try:
+                            progress_callback(remote_filename, current_bytes, current_transfer['total'])
+                        except Exception as cb_e:
+                            logger.warning(f"Progress callback failed: {cb_e}")
+                    
+            logger.info("Download logic complete.")
+
+        except Exception as e:
+            logger.error(f"Error during download_file: {e}", exc_info=True)
+            self.transfer_stats['errors'] += 1
+            if current_transfer.get('handle'):
+                try:
+                    current_transfer['handle'].close()
+                except Exception:
+                    pass
+            raise
+
     def shutdown(self):
         """Spegnimento sicuro"""
         self.running = False
@@ -1175,12 +1438,20 @@ def simple_progress_callback(filename: str, current_bytes: int, total_bytes: int
         print("\nTrasferimento completato.")
 
 def main():
-    parser = argparse.ArgumentParser(description="Secure File Transfer Node (v2.3)")
+    parser = argparse.ArgumentParser(description="Secure File Transfer Node (v2.6 - Bidirectional)")
     parser.add_argument('--mode', choices=['server', 'client'], required=True, help='Run as server or client')
     parser.add_argument('--host', type=str, default='0.0.0.0', help='Binding host IP for server')
     parser.add_argument('--port', type=int, default=DEFAULT_PORT, help='Port number')
     parser.add_argument('--connect', type=str, help='Server IP:Port to connect (client mode)')
-    parser.add_argument('--file', type=str, help='Path to the file to send (client mode)')
+    
+    # 🟢 FASE 3: Attivazione Interfaccia (CLI)
+    # Rendi --file un argomento opzionale
+    parser.add_argument('--file', type=str, help='Path to the file to UPLOAD (client mode)')
+    
+    # Aggiungi nuovi argomenti
+    parser.add_argument('--list', action='store_true', help='List remote files on server (client mode)')
+    parser.add_argument('--download', type=str, help='Filename of the remote file to DOWNLOAD (client mode)')
+    parser.add_argument('--output', type=str, default='.', help='Local directory or path to save downloaded file (default: current dir)')
     
     args = parser.parse_args()
     
@@ -1194,10 +1465,20 @@ def main():
             if not args.connect:
                 print("[ERROR] Specify --connect SERVER_IP:PORT for client mode")
                 return
-            if not args.file:
-                print("[ERROR] Specify --file LOCAL_FILE_PATH for client mode")
+            
+            # 🟢 FASE 3: Logica CLI
+            # Verifica che almeno un'azione sia specificata
+            if not args.file and not args.list and not args.download:
+                print("[ERROR] Client mode requires an action: --file (upload), --list, or --download")
+                parser.print_help()
                 return
             
+            # Controlla azioni mutuamente esclusive
+            action_count = sum([bool(args.file), bool(args.list), bool(args.download)])
+            if action_count > 1:
+                print("[ERROR] --file, --list, and --download are mutually exclusive actions.")
+                return
+
             server_host = args.connect
             server_port = DEFAULT_PORT
             if ':' in args.connect:
@@ -1225,7 +1506,36 @@ def main():
             # Esegui la logica client
             try:
                 node.connect_to_server(server_host, server_port)
-                node.send_file(args.file, progress_callback=simple_progress_callback)
+                
+                # 🟢 FASE 3: Esegui l'azione richiesta
+                if args.file:
+                    print(f"Uploading {args.file}...")
+                    node.send_file(args.file, progress_callback=simple_progress_callback)
+                
+                elif args.list:
+                    print("Requesting file list from server...")
+                    files = node.list_files()
+                    if files:
+                        print("\n--- File sul Server ---")
+                        for f in files:
+                            print(f"  - {f['name']} ({f['size']} bytes)")
+                        print("-----------------------")
+                    else:
+                        print("Nessun file trovato o errore del server.")
+                
+                elif args.download:
+                    local_path = Path(args.output).resolve()
+                    # Se l'output è una directory, salva il file al suo interno
+                    if local_path.is_dir():
+                        local_path = local_path / args.download
+                    
+                    print(f"Downloading '{args.download}' to '{local_path}'...")
+                    node.download_file(
+                        args.download, 
+                        local_path, 
+                        progress_callback=simple_progress_callback
+                    )
+
             except (ConnectionRefusedError, FileNotFoundError, Exception) as e:
                 logger.error(f"Client operation failed: {e}")
             finally:
