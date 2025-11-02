@@ -916,7 +916,18 @@ class SecureFileTransferNode:
                              err_packet = protocol._create_json_packet('file_ack', {'error': 'Missing filename'})
                              conn.sendall(err_packet)
                              continue
-
+                        # 🟢 FIX: Path Traversal (Information Leak)
+                        # Rifiuta se il nome richiesto contiene componenti di percorso.
+                        sanitized_name = protocol.sanitize_filename(remote_filename)
+                        
+                        if sanitized_name != remote_filename:
+                            logger.warning(f"[{thread_name}] Path Traversal attempt detected (Name mismatch): {remote_filename} != {sanitized_name}")
+                            err_packet = protocol._create_json_packet(
+                                'file_ack', 
+                                {'filename': remote_filename, 'error': 'File not found or access denied'}
+                            )
+                            conn.sendall(err_packet)
+                            continue
                         # --- CRITICAL: Path Traversal Check ---
                         sanitized_name = protocol.sanitize_filename(remote_filename)
                         target_path = (OUTPUT_DIR / sanitized_name).resolve()
@@ -1444,11 +1455,8 @@ def main():
     parser.add_argument('--port', type=int, default=DEFAULT_PORT, help='Port number')
     parser.add_argument('--connect', type=str, help='Server IP:Port to connect (client mode)')
     
-    # 🟢 FASE 3: Attivazione Interfaccia (CLI)
-    # Rendi --file un argomento opzionale
+    # Argomenti CLI
     parser.add_argument('--file', type=str, help='Path to the file to UPLOAD (client mode)')
-    
-    # Aggiungi nuovi argomenti
     parser.add_argument('--list', action='store_true', help='List remote files on server (client mode)')
     parser.add_argument('--download', type=str, help='Filename of the remote file to DOWNLOAD (client mode)')
     parser.add_argument('--output', type=str, default='.', help='Local directory or path to save downloaded file (default: current dir)')
@@ -1466,7 +1474,6 @@ def main():
                 print("[ERROR] Specify --connect SERVER_IP:PORT for client mode")
                 return
             
-            # 🟢 FASE 3: Logica CLI
             # Verifica che almeno un'azione sia specificata
             if not args.file and not args.list and not args.download:
                 print("[ERROR] Client mode requires an action: --file (upload), --list, or --download")
@@ -1479,6 +1486,7 @@ def main():
                 print("[ERROR] --file, --list, and --download are mutually exclusive actions.")
                 return
 
+            # Parsing connessione server
             server_host = args.connect
             server_port = DEFAULT_PORT
             if ':' in args.connect:
@@ -1502,12 +1510,55 @@ def main():
             except socket.gaierror:
                 print(f"[ERROR] Cannot resolve host: {server_host}")
                 return
+
+            # 🟢 FIX: Validazione percorso client *prima* della connessione
+            local_save_path_for_download: Optional[Path] = None
+
+            if args.download:
+                remote_filename_to_request = args.download
+
+                # FIX: Path Traversal Vulnerability (Client-side write)
+                # Determina un nome file *locale* sicuro, ignorando i percorsi
+                safe_local_filename = os.path.basename(remote_filename_to_request)
+                if not safe_local_filename: # Se l'input era "///" o "."
+                     print(f"[ERROR] Invalid remote filename: {remote_filename_to_request}")
+                     return
+
+                # Determina la directory di salvataggio locale
+                local_save_dir = Path(args.output).resolve()
+                
+                # Se l'output è una directory, salva il file al suo interno
+                if local_save_dir.is_dir():
+                    local_save_path_for_download = local_save_dir / safe_local_filename
+                else:
+                    # Se --output è un nome di file, usa quello
+                    local_save_path_for_download = local_save_dir
+                
+                print(f"Downloading '{remote_filename_to_request}' to '{local_save_path_for_download}'...")
+
+                try:
+                    # Assicurati che la directory di output esista
+                    local_save_path_for_download.parent.mkdir(parents=True, exist_ok=True)
+                    # Tenta di verificare i permessi di scrittura sul *file*
+                    with open(local_save_path_for_download, 'a'):
+                        pass
+                    # Rimuovi il file vuoto se esiste e non stiamo riprendendo
+                    if local_save_path_for_download.stat().st_size == 0:
+                         os.remove(local_save_path_for_download)
+
+                except PermissionError as e:
+                    print(f"[ERROR] Local permission error. Cannot write to destination: {local_save_path_for_download.parent}")
+                    print(f"Details: {e}")
+                    return # Esci *prima* di connetterti
+                except Exception as e:
+                    print(f"[ERROR] Local path error: {e}")
+                    return # Esci *prima* di connetterti
             
-            # Esegui la logica client
+            # Esegui la logica client (ORA che la validazione è passata)
             try:
                 node.connect_to_server(server_host, server_port)
                 
-                # 🟢 FASE 3: Esegui l'azione richiesta
+                # Esegui l'azione richiesta
                 if args.file:
                     print(f"Uploading {args.file}...")
                     node.send_file(args.file, progress_callback=simple_progress_callback)
@@ -1524,18 +1575,14 @@ def main():
                         print("Nessun file trovato o errore del server.")
                 
                 elif args.download:
-                    local_path = Path(args.output).resolve()
-                    # Se l'output è una directory, salva il file al suo interno
-                    if local_path.is_dir():
-                        local_path = local_path / args.download
-                    
-                    print(f"Downloading '{args.download}' to '{local_path}'...")
+                    # Il percorso è già stato controllato e validato
+                    # local_save_path_for_download è già definito
                     node.download_file(
-                        args.download, 
-                        local_path, 
+                        args.download, # Invia il nome *richiesto* (es. /etc/passwd)
+                        local_save_path_for_download, # Salva in un percorso *sicuro* (es. ./passwd)
                         progress_callback=simple_progress_callback
                     )
-
+                    
             except (ConnectionRefusedError, FileNotFoundError, Exception) as e:
                 logger.error(f"Client operation failed: {e}")
             finally:
