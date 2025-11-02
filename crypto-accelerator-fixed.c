@@ -381,39 +381,18 @@ static struct PyModuleDef cryptomodule = {
 };
 
 // Inizializzazione sicura
+// Inizializzazione sicura
 PyMODINIT_FUNC PyInit_crypto_accelerator(void) {
     // Inizializza OpenSSL in modo sicuro
     OpenSSL_add_all_algorithms();
     
-    // 🟢 CORREZIONE: Inizializzazione Random Fallback
-    if (RAND_status() != 1) {
-        unsigned char seed[32];
-        FILE *urandom = fopen("/dev/urandom", "rb"); // Tenta di leggere da /dev/urandom
-        if (urandom) {
-            // 🟢 FIX (Analisi #11): Loop per garantire lettura completa
-            size_t total_read = 0;
-            while (total_read < sizeof(seed)) {
-                size_t read_now = fread(seed + total_read, 1, sizeof(seed) - total_read, urandom);
-                if (read_now == 0) {
-                    // EOF o errore prima di riempire il seed
-                    fprintf(stderr, "CRITICAL ERROR: Failed to read sufficient bytes from /dev/urandom\n");
-                    break;
-                }
-                total_read += read_now;
-            }
-            
-            if (total_read == sizeof(seed)) {
-                RAND_seed(seed, sizeof(seed));
-                fprintf(stderr, "WARNING: OpenSSL PRNG manually seeded from /dev/urandom\n");
-            }
-            fclose(urandom);
-        } else {
-            // Log critico in caso di fallimento completo
-            fprintf(stderr, "CRITICAL ERROR: OpenSSL PRNG not seeded AND /dev/urandom not found.\n");
-        }
-        // Pulizia seed
-        secure_memzero(seed, sizeof(seed));
-    }
+    // 🟢 INIZIO MODIFICA (Finding #3 - Rimozione PRNG Manuale)
+    // Nelle versioni moderne di OpenSSL (1.1.1+),
+    // il PRNG viene inizializzato automaticamente e in modo sicuro
+    // (usando getrandom(), CryptGenRandom(), ecc.).
+    // Il seeding manuale (if RAND_status() != 1) da /dev/urandom
+    // è stato rimosso in quanto ridondante e non portabile.
+    // 🟢 FINE MODIFICA
 
     return PyModule_Create(&cryptomodule);
 }

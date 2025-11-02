@@ -18,6 +18,7 @@ import argparse
 import re
 import logging
 import ipaddress
+import select
 from pathlib import Path
 from typing import Tuple, Optional, Dict, Any, Set
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
@@ -43,6 +44,7 @@ RATE_LIMIT_WINDOW = 60  # secondi
 MAX_REQUESTS_PER_WINDOW = 100
 MAX_RECEIVED_MESSAGES = 1000
 MAX_GLOBAL_CONNECTIONS = 50
+IDLE_TIMEOUT = 60 # Secondi di inattività prima di chiudere
 OUTPUT_DIR = Path("ricevuti")
 
 # Tipi di payload
@@ -740,12 +742,41 @@ class SecureFileTransferNode:
                 logger.error(f"[{thread_name}] Handshake failed. Closing connection.")
                 return # 'finally' si occuperà del decremento
             
+            # 🟢 INIZIO MODIFICA (Finding #1 - Idle Timeout)
+            last_activity_time = time.time()
+            # 🟢 FINE MODIFICA
+
             # 2. Loop di comunicazione (State Machine)
             while self.running:
                 
-                # 2.1. Leggi e parsa il prossimo pacchetto
+                # 🟢 INIZIO MODIFICA (Finding #1 - Idle Timeout)
+                # 2.0 Verifica idle timeout usando select
+                now = time.time()
+                remaining_idle_time = (last_activity_time + IDLE_TIMEOUT) - now
+                
+                if remaining_idle_time <= 0:
+                    logger.warning(f"[{thread_name}] Closing connection from {host} due to idle timeout ({IDLE_TIMEOUT}s).")
+                    break # Interrompi il loop, 'finally' pulirà
+
+                # Attendi il minimo tra il timeout di inattività rimanente e il timeout del socket
+                wait_time = min(remaining_idle_time, SOCKET_TIMEOUT)
+                
+                # Usa select per attendere dati in modo non bloccante (rispetto all'IDLE_TIMEOUT)
+                ready_to_read, _, _ = select.select([conn], [], [], wait_time)
+                
+                if not ready_to_read:
+                    # Select è scaduto (o per 'wait_time' o per 'remaining_idle_time')
+                    # Il loop rieseguirà il check di remaining_idle_time all'inizio
+                    continue
+                # 🟢 FINE MODIFICA
+
+                # 2.1. Leggi e parsa il prossimo pacchetto (ora sappiamo ci sono dati)
                 # 🟢 MODIFICA: Passa il protocol locale
                 pkt_type, payload, offset = self._read_and_parse_packet(conn, host, protocol)
+                
+                # 🟢 INIZIO MODIFICA (Finding #1 - Idle Timeout)
+                last_activity_time = time.time() # Resetta il timer DOPO attività
+                # 🟢 FINE MODIFICA
 
                 # 2.2. Gestione Pacchetti JSON (Comandi)
                 if pkt_type == 'json':
@@ -901,7 +932,6 @@ class SecureFileTransferNode:
                 pass
             with self._counter_lock:
                 self._connection_counter -= 1
-    # 🟢 FINE REFACTORING THREAD-SAFE (Funzione #4)
 
     def start_server(self):
         """Avvia server sicuro"""
@@ -1023,37 +1053,56 @@ class SecureFileTransferNode:
             logger.info(f"Server ACK. Starting upload from offset: {start_offset}")
 
             # 3. Invia Chunks
-            with local_path.open('rb') as f:
-                f.seek(start_offset)
-                current_offset = start_offset
-                
-                while self.running and current_offset < total_size:
-                    # Legge un chunk
-                    chunk = f.read(BUFFER_SIZE) 
-                    if not chunk:
-                        # 🟢 FIX (Analisi #10): EOF prematuro!
-                        logger.error(f"EOF reached prematurely at {current_offset} (expected {total_size}). File modified?")
-                        # Invia un errore (best-effort)
-                        err_packet = self.protocol._create_json_packet(
-                            'file_complete', 
-                            {'filename': filename, 'error': 'File read error (EOF)'}
-                        )
-                        self.peer_socket.sendall(err_packet)
-                        break
+            
+            # 🟢 INIZIO MODIFICA (Finding #2 - Memory Remanence)
+            # Usa un bytearray mutabile per la pulizia della memoria
+            chunk_ba = bytearray(BUFFER_SIZE)
+            chunk_view = memoryview(chunk_ba)
+
+            try:
+                with local_path.open('rb') as f:
+                    f.seek(start_offset)
+                    current_offset = start_offset
                     
-                    # 🟢 MODIFICA: Usa self.protocol (logica Client)
-                    data_packet = self.protocol._create_data_packet(chunk, current_offset)
-                    self.peer_socket.sendall(data_packet)
-                    self.transfer_stats['sent'] += 1
-                    
-                    current_offset += len(chunk)
-                    
-                    if progress_callback:
-                        try:
-                            # Esegui il callback
-                            progress_callback(filename, current_offset, total_size)
-                        except Exception as cb_e:
-                            logger.warning(f"Progress callback failed: {cb_e}")
+                    while self.running and current_offset < total_size:
+                        # Legge un chunk nel bytearray
+                        read_len = f.readinto(chunk_ba)
+                        
+                        if read_len == 0:
+                            # 🟢 FIX (Analisi #10): EOF prematuro!
+                            if current_offset < total_size:
+                                logger.error(f"EOF reached prematurely at {current_offset} (expected {total_size}). File modified?")
+                                # Invia un errore (best-effort)
+                                err_packet = self.protocol._create_json_packet(
+                                    'file_complete', 
+                                    {'filename': filename, 'error': 'File read error (EOF)'}
+                                )
+                                self.peer_socket.sendall(err_packet)
+                            break # Esci dal loop se read_len è 0
+                        
+                        # Se abbiamo letto meno del buffer, usa una memoryview
+                        if read_len < BUFFER_SIZE:
+                            chunk_to_send = chunk_view[:read_len]
+                        else:
+                            chunk_to_send = chunk_ba # Usa l'intero bytearray
+                        
+                        # 🟢 MODIFICA: Usa self.protocol (logica Client)
+                        data_packet = self.protocol._create_data_packet(chunk_to_send, current_offset)
+                        self.peer_socket.sendall(data_packet)
+                        self.transfer_stats['sent'] += 1
+                        
+                        current_offset += read_len
+                        
+                        if progress_callback:
+                            try:
+                                # Esegui il callback
+                                progress_callback(filename, current_offset, total_size)
+                            except Exception as cb_e:
+                                logger.warning(f"Progress callback failed: {cb_e}")
+            finally:
+                # Assicura la pulizia del buffer del chunk
+                _clear_memory(chunk_ba)
+            # 🟢 FINE MODIFICA
                 
             if not self.running:
                 logger.warning("Transfer interrupted during chunk sending.")
@@ -1084,7 +1133,7 @@ class SecureFileTransferNode:
             logger.error(f"Error during send_file: {e}", exc_info=True)
             self.transfer_stats['errors'] += 1
             raise # Rilancia l'eccezione
-
+            
     def shutdown(self):
         """Spegnimento sicuro"""
         self.running = False
