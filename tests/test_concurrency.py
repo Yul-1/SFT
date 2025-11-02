@@ -1,183 +1,225 @@
 #!/usr/bin/env python3
 """
-test_concurrency.py
-
-Test di concorrenza per secure_file_transfer_fixed.py.
-Verifica che il server (v2.5 refactored) gestisca correttamente
-connessioni multiple e trasferimenti simultanei senza corruzione
-dati o race condition.
+Suite di Test Categoria 10 (Concorrenza) e 7 (Thread-Safety C)
+Team: _team controllo
+(Versione 1.2: Corretto nome fixture 'persistent_server')
 """
 
 import pytest
 import threading
-import socket
 import time
+import socket
+import logging
 import os
 import hashlib
 import sys
 from pathlib import Path
-from typing import List, Dict, Any
+from typing import Tuple, Generator, List, Any
 
 # --- Configurazione Path ---
-# Aggiungiamo la root del progetto
 try:
     project_root = Path(__file__).parent.parent
     sys.path.insert(0, str(project_root))
     
-    from secure_file_transfer_fixed import SecureFileTransferNode, OUTPUT_DIR
-    
+    from secure_file_transfer_fixed import (
+        SecureFileTransferNode,
+        OUTPUT_DIR,
+        MAX_GLOBAL_CONNECTIONS
+    )
+    from python_wrapper_fixed import (
+        SecureCrypto,
+        SecurityConfig,
+        C_MODULE_AVAILABLE,
+        AES_KEY_SIZE,
+        AES_NONCE_SIZE
+    )
+    if C_MODULE_AVAILABLE:
+         import crypto_accelerator as crypto_c
+
 except ImportError as e:
-    print(f"Errore di import in test_concurrency: {e}")
+    print(f"\n--- ERRORE DI IMPORT ---")
+    print(f"Errore: {e}")
+    print(f"Assicurati che 'secure_file_transfer_fixed.py', 'python_wrapper_fixed.py' e 'crypto_accelerator.so' siano in: {project_root}")
     sys.exit(1)
 
-# --- Costanti di Test ---
-TEST_HOST = '127.0.0.1'
-NUM_CONCURRENT_CLIENTS = 5 # Numero di client da eseguire in parallelo
+
+# Utility per calcolare l'hash
+def sha256_file(file_path: Path) -> str:
+    h = hashlib.sha256()
+    with file_path.open('rb') as f:
+        while chunk := f.read(8192):
+            h.update(chunk)
+    return h.hexdigest()
+
+CONCURRENT_THREADS = 30 
 
 # --- Fixtures ---
+# Rimosse. Si affida a conftest.py
 
 @pytest.fixture(scope="module")
-def client_test_files(dummy_file_factory):
-    """
-    Crea i file sorgente necessari per i test di concorrenza.
-    Usa la fixture 'dummy_file_factory' (definita in conftest.py)
-    """
-    files_to_create = [
-        ("client_file_1.bin", 50),  # 50KB
-        ("client_file_2.bin", 100), # 100KB
-        ("client_file_3.bin", 20),  # 20KB
-        ("client_file_4.bin", 75),
-        ("client_file_5.bin", 10)
-    ]
-    
-    # Crea solo i file necessari per NUM_CONCURRENT_CLIENTS
-    created_files = {}
-    for i in range(NUM_CONCURRENT_CLIENTS):
-        if i < len(files_to_create):
-            name, size = files_to_create[i]
-            file_path = dummy_file_factory(name, size)
-            
-            # Calcola l'hash per la verifica
-            content = file_path.read_bytes()
-            file_hash = hashlib.sha256(content).hexdigest()
-            created_files[str(file_path)] = file_hash
-            
-    return created_files
-
-# --- Test Suite Concorrenza ---
-
-# 1. Test di base della fixture
-def test_server_fixture(persistent_server):
-    """TEST 1: Verifica che la fixture 'persistent_server' sia attiva."""
-    # 🟢 FIX: Usa la fixture 'persistent_server'
-    assert persistent_server.running is True
-    assert persistent_server.port != 0
-    # Tenta una connessione socket
-    try:
-        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        s.connect((persistent_server.host, persistent_server.port))
-        s.close()
-    except Exception as e:
-        pytest.fail(f"La fixture 'persistent_server' non risponde: {e}")
-
-# 2. Test singolo client (verifica la baseline)
-def test_single_client_transfer(persistent_server, client_test_files, server_output_dir):
-    """TEST 2: Verifica un singolo trasferimento file E2E."""
-    # 🟢 FIX: Usa la fixture 'persistent_server'
-    host = persistent_server.host
-    port = persistent_server.port
-    
-    # Prendi il primo file
-    filepath, expected_hash = list(client_test_files.items())[0]
-    
-    client = SecureFileTransferNode(mode='client')
-    try:
-        client.connect_to_server(host, port)
-        client.send_file(str(filepath))
-    except Exception as e:
-        pytest.fail(f"Test client singolo fallito: {e}")
-    finally:
-        client.shutdown()
+def crypto_wrapper() -> SecureCrypto:
+    """Fixture per un'istanza del wrapper C (se disponibile)."""
+    if not C_MODULE_AVAILABLE:
+        pytest.skip("Modulo C non disponibile, salto test thread-safety C.")
         
-    # Verifica il file
-    received_file = server_output_dir / Path(filepath).name
-    assert received_file.exists()
-    assert hashlib.sha256(received_file.read_bytes()).hexdigest() == expected_hash
+    config = SecurityConfig(use_hardware_acceleration=True)
+    crypto = SecureCrypto(config)
+    assert crypto.use_c is True
+    return crypto
 
-# 3. Test di concorrenza
-def test_concurrent_client_transfers(persistent_server, client_test_files, server_output_dir):
+
+# --- Test Categoria 7 (Thread-Safety C) ---
+
+def crypto_worker_c_module(crypto: SecureCrypto, barrier: threading.Barrier, results: list):
     """
-    TEST 3: Esegue N client in parallelo, ognuno inviando un file diverso.
-    Verifica che TUTTI i file arrivino integri.
+    Worker per il test di thread-safety del C.
     """
-    # 🟢 FIX: Usa la fixture 'persistent_server'
-    host = persistent_server.host
-    port = persistent_server.port
+    try:
+        key = os.urandom(AES_KEY_SIZE)
+        iv = os.urandom(AES_NONCE_SIZE)
+        plaintext = os.urandom(1024)
+        
+        barrier.wait()
+        
+        for _ in range(10):
+            ciphertext, tag = crypto.encrypt_aes_gcm(plaintext, key, iv)
+            decrypted = crypto.decrypt_aes_gcm(ciphertext, key, iv, tag)
+            assert decrypted == plaintext
+            
+        results.append(None) # Successo
+    except Exception as e:
+        results.append(e) # Fallimento
+
+def test_p2_c_module_thread_safety(crypto_wrapper: SecureCrypto):
+    """
+    (CAT 7) Verifica che il modulo C sia thread-safe.
+    (FIX 1.1: Corretto .get_stats() -> .stats)
+    """
+    print(f"\n--- test_p2_c_module_thread_safety ({CONCURRENT_THREADS} threads) ---")
     
-    # Lista per tenere traccia dei thread e dei risultati
+    crypto_wrapper.stats = {'c_module_used': 0, 'python_fallback': 0, 'errors': 0}
+    
     threads: List[threading.Thread] = []
-    results: Dict[str, Any] = {} # Dict thread-safe
+    results: List[Any] = []
+    barrier = threading.Barrier(CONCURRENT_THREADS)
     
-    # Funzione target per il thread
-    def client_thread_task(filepath: str, thread_results: Dict):
-        """
-        Task eseguito da ogni thread client.
-        Connette, invia 1 file, disconnette.
-        """
-        client_node = SecureFileTransferNode(mode='client')
-        thread_id = threading.current_thread().name
-        try:
-            client_node.connect_to_server(host, port)
-            client_node.send_file(str(filepath))
-            thread_results[thread_id] = "SUCCESS"
-        except Exception as e:
-            thread_results[thread_id] = f"FAILED: {e}"
-        finally:
-            client_node.shutdown()
-
-    # Avvia i thread
-    print(f"\n[Test Concorrenza] Avvio di {NUM_CONCURRENT_CLIENTS} client...")
-    
-    # Assicurati che il numero di file corrisponda
-    file_items = list(client_test_files.items())
-    assert len(file_items) >= NUM_CONCURRENT_CLIENTS
-
-    for i in range(NUM_CONCURRENT_CLIENTS):
-        filepath, _ = file_items[i]
+    for i in range(CONCURRENT_THREADS):
         t = threading.Thread(
-            target=client_thread_task, 
-            args=(filepath, results),
-            name=f"ClientTask-{i+1}"
+            target=crypto_worker_c_module,
+            args=(crypto_wrapper, barrier, results),
+            name=f"CryptoWorker-{i}"
         )
-        t.start()
         threads.append(t)
+        t.start()
         
-    # Attendi il completamento
+    print("Avvio thread... Attesa completamento...")
+    
     for t in threads:
-        t.join(timeout=30.0) # Timeout 30 secondi
-
-    print(f"[Test Concorrenza] Thread completati. Risultati: {results}")
-
-    # 1. Verifica che tutti i thread abbiano avuto successo
-    assert len(results) == NUM_CONCURRENT_CLIENTS
-    for thread_id, status in results.items():
-        assert status == "SUCCESS", f"Thread {thread_id} fallito: {status}"
-
-    # 2. Verifica che tutti i file siano stati ricevuti e siano corretti
-    print(f"[Test Concorrenza] Verifica file in {OUTPUT_DIR}...")
+        t.join()
+        
+    print("Tutti i thread C completati.")
     
-    assert len(list(server_output_dir.glob("*.bin"))) == NUM_CONCURRENT_CLIENTS
+    exceptions = [r for r in results if isinstance(r, Exception)]
+    assert len(exceptions) == 0, f"Errori di thread-safety C rilevati: {exceptions}"
+    assert len(results) == CONCURRENT_THREADS, "Numero errato di risultati"
     
-    for filepath_str, expected_hash in client_test_files.items():
-        filename = Path(filepath_str).name
-        received_file = server_output_dir / filename
+    stats = crypto_wrapper.stats
+    expected_calls = 10 * 2 * CONCURRENT_THREADS
+    assert stats['c_module_used'] >= expected_calls
+    
+    print("Test P2.7 (C-Module Thread-Safety) completato: Nessun crash o errore.")
+
+
+# --- Test Categoria 10 (Concorrenza Server) ---
+
+def client_upload_worker(server_port: int, file_to_upload: Path, file_hash: str, results: list):
+    """
+    Worker per lo stress test del server.
+    """
+    client = None
+    try:
+        client = SecureFileTransferNode(mode='client')
+        client.connect_to_server('127.0.0.1', server_port)
+        client.send_file(str(file_to_upload))
+        results.append({'file': file_to_upload.name, 'hash': file_hash})
+    except Exception as e:
+        results.append(e)
+    finally:
+        if client:
+            client.shutdown()
+
+def test_p2_server_stress_test_concurrent_uploads(
+    persistent_server: SecureFileTransferNode, # (FIX 2.0) Usa 'persistent_server'
+    server_output_dir: Path, # (FIX 2.0) Inietta fixture
+    tmp_path: Path, 
+    monkeypatch: pytest.MonkeyPatch
+):
+    """
+    (CAT 10) Stress test: Simula N client che caricano N file unici
+    simultaneamente.
+    (FIX 2.0: Corretto nome fixture e iniezione dir)
+    """
+    print(f"\n--- test_p2_server_stress_test_concurrent_uploads ({CONCURRENT_THREADS} threads) ---")
+    
+    monkeypatch.setattr(persistent_server.connection_limiter, "max_requests", 500)
+    
+    for f in server_output_dir.glob('*'):
+        if f.is_file():
+            f.unlink()
+
+    client_files = [] 
+    for i in range(CONCURRENT_THREADS):
+        file_path = tmp_path / f"stress_file_{i:03d}.dat"
+        file_data = os.urandom(1024 * 10) # 10KB
+        file_path.write_bytes(file_data)
+        file_hash = sha256_file(file_path)
+        client_files.append((file_path, file_hash))
         
-        print(f"Verifica: {filename}...")
+    threads: List[threading.Thread] = []
+    results: List[Any] = []
+    server_port = persistent_server.port
+    
+    print(f"Avvio {CONCURRENT_THREADS} thread client...")
+    
+    for file_path, file_hash in client_files:
+        t = threading.Thread(
+            target=client_upload_worker,
+            args=(server_port, file_path, file_hash, results)
+        )
+        threads.append(t)
+        t.start()
+        time.sleep(0.01) 
         
-        assert received_file.exists(), f"File {filename} non trovato"
+    print("Attesa completamento upload...")
+    for t in threads:
+        t.join()
         
-        # Calcola l'hash del file ricevuto
-        received_hash = hashlib.sha256(received_file.read_bytes()).hexdigest()
-        assert received_hash == expected_hash, f"Hash mismatch per {filename}"
+    print("Tutti i thread client completati.")
+    
+    exceptions = [r for r in results if isinstance(r, Exception)]
+    
+    assert len(exceptions) == 0, f"Errori durante l'upload concorrente: {exceptions}"
+    assert len(results) == CONCURRENT_THREADS, "Numero errato di risultati client"
+    
+    server_files = list(server_output_dir.glob('stress_file_*.dat'))
+    assert len(server_files) == CONCURRENT_THREADS, \
+        f"Il server ha ricevuto {len(server_files)} file, attesi {CONCURRENT_THREADS}"
         
-    print("[Test Concorrenza] Tutti i file sono stati verificati.")
+    print("Verifica hash sul server...")
+    
+    expected_hashes = {r['file']: r['hash'] for r in results}
+    
+    for server_file_path in server_files:
+        server_hash = sha256_file(server_file_path)
+        assert server_file_path.name in expected_hashes, \
+            f"File inatteso sul server: {server_file_path.name}"
+            
+        expected = expected_hashes[server_file_path.name]
+        assert server_hash == expected, \
+            f"HASH MISMATCH per {server_file_path.name}. Atteso: {expected[:10]}..., Ricevuto: {server_hash[:10]}..."
+
+    print("Test P2.10 (Stress Test Server) completato: Tutti i file sono stati ricevuti correttamente.")
+
+    # Pulizia
+    for f in server_files:
+        f.unlink()
