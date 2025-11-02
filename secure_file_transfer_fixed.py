@@ -1035,7 +1035,7 @@ class SecureFileTransferNode:
                 'filename': filename, 
                 'total_size': total_size, 
                 'hash': file_hash,
-                'timestamp': datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z') # <-- RIGA AGGIUNTA
+                'timestamp': datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ') # <-- RIGA AGGIUNTA
             }           # 🟢 MODIFICA: Usa self.protocol (logica Client)
             header_packet = self.protocol._create_json_packet('file_header', header_payload)
             self.peer_socket.sendall(header_packet)
