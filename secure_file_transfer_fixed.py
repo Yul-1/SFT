@@ -27,7 +27,7 @@ from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 from cryptography.hazmat.primitives.asymmetric import rsa, padding
 from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives import padding as sym_padding
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from collections import deque
 from jsonschema import validate, ValidationError
 
@@ -1029,8 +1029,14 @@ class SecureFileTransferNode:
             file_hash = file_hash_obj.hexdigest()
 
             # 1. Invia 'file_header'
+            # 1. Invia 'file_header'
             logger.info(f"Sending file header for {filename} ({total_size} bytes)")
-            header_payload = {'filename': filename, 'total_size': total_size, 'hash': file_hash}            # 🟢 MODIFICA: Usa self.protocol (logica Client)
+            header_payload = {
+                'filename': filename, 
+                'total_size': total_size, 
+                'hash': file_hash,
+                'timestamp': datetime.now(timezone.utc).isoformat() # <-- RIGA AGGIUNTA
+            }           # 🟢 MODIFICA: Usa self.protocol (logica Client)
             header_packet = self.protocol._create_json_packet('file_header', header_payload)
             self.peer_socket.sendall(header_packet)
             self.transfer_stats['sent'] += 1
