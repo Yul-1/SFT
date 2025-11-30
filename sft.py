@@ -108,7 +108,7 @@ class RateLimiter:
         self._cleanup_thread.start()
         
     def is_allowed(self, client_id: str) -> bool:
-        """Verifica se una richiesta Ã¨ permessa"""
+        """Check if a request is allowed"""
         with self._lock:
             now = time.time()
             if client_id not in self.requests:
@@ -342,7 +342,7 @@ class SecureProtocol:
         return filename or "unnamed_file"
     
     def encrypt_data(self, data: bytes, key: bytes = None) -> Tuple[bytes, str, bytes, bytes]:
-        """Cifra con AES-256-GCM. Se viene fornita una chiave esterna, il key_id Ã¨ derivato dalla chiave stessa."""
+        """Encrypt with AES-256-GCM. If an external key is provided, the key_id is derived from the key itself."""
         with self.key_manager._lock:
             if key is None:
                 key = self.key_manager.current_key
@@ -386,7 +386,7 @@ class SecureProtocol:
             raise
     
     def _create_json_packet(self, msg_type: str, payload: Dict[str, Any], sign: bool = True) -> bytes:
-        """Crea pacchetto JSON (Controllo) con firma e cifratura"""
+        """Create JSON packet (Control) with signature and encryption"""
         message = {
             'type': msg_type,
             'version': PROTOCOL_VERSION,
@@ -427,7 +427,7 @@ class SecureProtocol:
         return header + ciphertext
     
     def _create_data_packet(self, data: bytes, offset: int) -> bytes:
-        """Crea pacchetto Dati (Chunk) con cifratura"""
+        """Create Data packet (Chunk) with encryption"""
         if len(data) > MAX_PACKET_SIZE:
              raise ValueError(f"Data chunk too large: {len(data)} bytes")
              
@@ -449,10 +449,10 @@ class SecureProtocol:
 
     def parse_packet(self, data: bytes, client_id: str) -> Tuple[str, Any, int]:
         """
-        Analizza pacchetto con rate limiting e controllo replay.
-        Restituisce (tipo_pacchetto, payload, offset)
-        'json' -> (payload Ã¨ un dict)
-        'data' -> (payload sono bytes)
+        Analyze packet with rate limiting and replay protection.
+        Returns (packet_type, payload, offset)
+        'json' -> (payload is a dict)
+        'data' -> (payload is bytes)
         """
         
         if len(data) < HEADER_PACKET_SIZE:
@@ -528,7 +528,7 @@ class SecureProtocol:
         return True
 
 class SecureFileTransferNode:
-    """Nodo sicuro per trasferimento file con gestione DoS"""
+    """Secure file transfer node with DoS management"""
     def __init__(self, mode: str, host: str = '0.0.0.0', port: int = DEFAULT_PORT):
         self.mode = mode
         self.host = host
@@ -556,7 +556,7 @@ class SecureFileTransferNode:
             logger.info(f"Directory di output {OUTPUT_DIR.resolve()} assicurata.")
 
     def _recv_all(self, sock: socket.socket, length: int) -> Optional[bytes]:
-        """Riceve esattamente N bytes o None in caso di errore/timeout"""
+        """Receives exactly N bytes or returns None on error/timeout"""
         data = b''
         while len(data) < length:
             try:
@@ -573,7 +573,7 @@ class SecureFileTransferNode:
         return data
 
     def _perform_secure_handshake(self, sock: socket.socket, peer_addr: str, key_manager: Optional[SecureKeyManager] = None) -> bool:
-        """Esegue l'handshake RSA-OAEP"""
+        """Performs the RSA-OAEP handshake"""
         
         km = key_manager if key_manager else self.key_manager
         
@@ -615,7 +615,7 @@ class SecureFileTransferNode:
             return False
 
     def _read_and_parse_packet(self, sock: socket.socket, client_id: str, protocol: Optional[SecureProtocol] = None) -> Tuple[str, Any, int]:
-        """Helper per leggere un pacchetto completo (Header + Payload) e parsarlo"""
+        """Helper to read a complete packet (Header + Payload) and parse it"""
         
         proto = protocol if protocol else self.protocol
         
@@ -643,7 +643,7 @@ class SecureFileTransferNode:
         return pkt_type, payload, offset
 
     def _handle_connection(self, conn: socket.socket, addr: Tuple[str, int]):
-        """Gestisce il traffico cifrato in un thread separato (LOGICA SERVER)"""
+        """Handles encrypted traffic in a separate thread (SERVER LOGIC)"""
         
         thread_name = threading.current_thread().name
         host, port = addr
@@ -905,7 +905,7 @@ class SecureFileTransferNode:
                 self._connection_counter -= 1
 
     def start_server(self):
-        """Avvia server sicuro"""
+        """Start secure server"""
         self.running = True
         self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -918,7 +918,7 @@ class SecureFileTransferNode:
         self.socket.listen(5)
         
         logger.info(f"Server listening on {self.host}:{self.port}...")
-        logger.info(f"File verranno salvati in: {OUTPUT_DIR.resolve()}")
+        logger.info(f"Files output: {OUTPUT_DIR.resolve()}")
 
         try:
             while self.running:
@@ -948,7 +948,7 @@ class SecureFileTransferNode:
             self.shutdown()
 
     def connect_to_server(self, host: str, port: int):
-        """Connette al server in modo sicuro ed esegue l'handshake"""
+        """Connects securely to the server and performs the handshake"""
         self.running = True
         self.peer_address = host
         self.peer_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -976,8 +976,8 @@ class SecureFileTransferNode:
         progress_callback: Optional[callable] = None
     ):
         """
-        Logica di invio file interna, usata sia dal client (upload) 
-        che dal server (download).
+        Internal file sending logic, used by both client (upload)
+        and server (download).
         """
         
         try:
@@ -1090,7 +1090,7 @@ class SecureFileTransferNode:
             raise
 
     def send_file(self, local_filepath: str, progress_callback: Optional[callable] = None):
-        """Invia un file al server connesso (LOGICA CLIENT - Upload)"""
+        """Send a file to the connected server (CLIENT LOGIC - Upload)"""
         if not self.running or not self.peer_socket:
             raise ConnectionError("Not connected to server.")
         
@@ -1110,7 +1110,7 @@ class SecureFileTransferNode:
         )
             
     def list_files(self) -> list:
-        """Richiede l'elenco dei file remoti (LOGICA CLIENT)"""
+        """Request the list of remote files (CLIENT LOGIC)"""
         if not self.running or not self.peer_socket:
             raise ConnectionError("Not connected to server.")
         
@@ -1139,7 +1139,7 @@ class SecureFileTransferNode:
             raise
             
     def download_file(self, remote_filename: str, local_save_path: Path, progress_callback: Optional[callable] = None):
-        """Richiede un file dal server (LOGICA CLIENT - Download)"""
+        """Request a file from the server (CLIENT LOGIC - Download)"""
         if not self.running or not self.peer_socket:
             raise ConnectionError("Not connected to server.")
         
@@ -1272,7 +1272,7 @@ class SecureFileTransferNode:
             raise
 
     def shutdown(self):
-        """Spegnimento sicuro"""
+        """Secure shutdown of the node"""
         self.running = False
         if self.socket:
             try:
@@ -1299,7 +1299,7 @@ def simple_progress_callback(filename: str, current_bytes: int, total_bytes: int
     percent = (current_bytes / total_bytes) * 100
     print(f"\rProgresso: {filename} - {current_bytes}/{total_bytes} bytes ({percent:.2f}%)", end="")
     if current_bytes == total_bytes:
-        print("\nTrasferimento completato.")
+        print("\nTransfer completed.")
 
 def main():
     parser = argparse.ArgumentParser(description="Secure File Transfer Node (v2.6 - Bidirectional)")
@@ -1425,12 +1425,12 @@ def main():
                     print("Requesting file list from server...")
                     files = node.list_files()
                     if files:
-                        print("\n--- File sul Server ---")
+                        print("\n--- File on Server ---")
                         for f in files:
                             print(f"  - {f['name']} ({f['size']} bytes)")
                         print("-----------------------")
                     else:
-                        print("Nessun file trovato o errore del server.")
+                        print("No file or server error.")
                 
                 elif args.download:
                     actual_download_path = temp_download_path if temp_download_path else local_save_path_for_download

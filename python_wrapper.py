@@ -56,7 +56,7 @@ if C_MODULE_AVAILABLE:
 
 def _clear_memory(data: bytes) -> None:
     """
-    Pulizia sicura della memoria (Best-Effort in Python) per i dati sensibili.
+    Secure memory clearing (best-effort in Python) for sensitive data.
     """
     if data is None:
         return
