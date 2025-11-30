@@ -38,7 +38,7 @@ try:
 except ImportError as e:
     print(f"\n--- ERRORE DI IMPORT ---")
     print(f"Errore: {e}")
-    print(f"Assicurati che 'secure_file_transfer_fixed.py' sia in: {project_root}")
+    print(f"Assicurati che 'sft.py' sia in: {project_root}")
     sys.exit(1)
 
 
