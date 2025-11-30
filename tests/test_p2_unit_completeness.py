@@ -136,35 +136,44 @@ def test_p2_protocol_parse_packet_invalid_timestamp(protocol: SecureProtocol, ke
     
     key_manager.generate_session_key()
     
-    # 1. Timestamp troppo vecchio (10 minuti fa)
-    old_timestamp = "2024-01-01T11:50:00" # 10 min fa
+    old_timestamp = "2024-01-01T11:50:00"
     with patch.object(protocol, '_check_and_add_message', return_value=True):
-        message_bytes = json.dumps({
-            'type': 'ping', 'version': PROTOCOL_VERSION, 
-            'payload': {}, 'timestamp': old_timestamp
-        }).encode('utf-8')
-        
-        ciphertext, key_id, nonce, tag = protocol.encrypt_data(message_bytes)
-        header = struct.pack(HEADER_FORMAT, b'SFTP', 2, 0x01, 0, len(ciphertext), 
-                            key_id.encode().ljust(16, b'\x00'), nonce, tag)
-        
-        with pytest.raises(ValueError, match="Invalid timestamp"):
-             protocol.parse_packet(header + ciphertext, "client_id")
+        with patch.object(protocol, '_validate_sequence_number', return_value=True):
+            message_bytes = json.dumps({
+                'type': 'ping', 'version': PROTOCOL_VERSION,
+                'payload': {}, 'timestamp': old_timestamp, 'seq': 0
+            }).encode('utf-8')
+
+            nonce = os.urandom(12)
+            key_id_bytes = key_manager.key_id.encode().ljust(16, b'\x00')
+            aad = struct.pack('!4sI B Q I 16s 12s', b'SFTP', 2, 0x01, 0, len(message_bytes),
+                            key_id_bytes, nonce)
+            ciphertext, key_id, nonce, tag = protocol.encrypt_data(message_bytes, nonce=nonce, aad=aad)
+            header = struct.pack(HEADER_FORMAT, b'SFTP', 2, 0x01, 0, len(ciphertext),
+                                key_id_bytes, nonce, tag)
+
+            with pytest.raises(ValueError, match="Invalid timestamp"):
+                protocol.parse_packet(header + ciphertext, "client_id")
 
     # 2. Timestamp futuro (10 minuti nel futuro)
-    future_timestamp = "2024-01-01T12:10:00" # 10 min nel futuro
+    future_timestamp = "2024-01-01T12:10:00"
     with patch.object(protocol, '_check_and_add_message', return_value=True):
-        message_bytes = json.dumps({
-            'type': 'ping', 'version': PROTOCOL_VERSION, 
-            'payload': {}, 'timestamp': future_timestamp
-        }).encode('utf-8')
-        
-        ciphertext, key_id, nonce, tag = protocol.encrypt_data(message_bytes)
-        header = struct.pack(HEADER_FORMAT, b'SFTP', 2, 0x01, 0, len(ciphertext), 
-                            key_id.encode().ljust(16, b'\x00'), nonce, tag)
-        
-        with pytest.raises(ValueError, match="Invalid timestamp"):
-             protocol.parse_packet(header + ciphertext, "client_id")
+        with patch.object(protocol, '_validate_sequence_number', return_value=True):
+            message_bytes = json.dumps({
+                'type': 'ping', 'version': PROTOCOL_VERSION,
+                'payload': {}, 'timestamp': future_timestamp, 'seq': 1
+            }).encode('utf-8')
+
+            nonce = os.urandom(12)
+            key_id_bytes = key_manager.key_id.encode().ljust(16, b'\x00')
+            aad = struct.pack('!4sI B Q I 16s 12s', b'SFTP', 2, 0x01, 0, len(message_bytes),
+                            key_id_bytes, nonce)
+            ciphertext, key_id, nonce, tag = protocol.encrypt_data(message_bytes, nonce=nonce, aad=aad)
+            header = struct.pack(HEADER_FORMAT, b'SFTP', 2, 0x01, 0, len(ciphertext),
+                                key_id_bytes, nonce, tag)
+
+            with pytest.raises(ValueError, match="Invalid timestamp"):
+                protocol.parse_packet(header + ciphertext, "client_id")
 
 def test_p2_protocol_create_packet_too_large(protocol: SecureProtocol, key_manager: SecureKeyManager):
     """

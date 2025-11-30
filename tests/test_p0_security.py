@@ -61,35 +61,69 @@ def malicious_socket(persistent_server: SecureFileTransferNode) -> Generator[soc
 @pytest.fixture
 def malicious_client_authed(malicious_socket: socket.socket) -> Generator[Tuple[socket.socket, SecureKeyManager], None, None]:
     """
-    Socket grezzo che ha completato l'handshake RSA.
+    Socket grezzo che ha completato l'handshake ECDH + Ed25519.
     """
+    from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+    from cryptography.hazmat.backends import default_backend
+    import os
+
     sock = malicious_socket
     km = SecureKeyManager("malicious_client")
-    
+
     try:
-        public_key_pem = km.get_public_key_pem()
-        sock.sendall(struct.pack('!I', len(public_key_pem)) + public_key_pem)
-        
-        header = sock.recv(struct.calcsize('!I'))
-        if not header: raise ConnectionAbortedError("Server ha chiuso durante handshake (recv key len)")
-        peer_key_len, = struct.unpack('!I', header)
-        peer_key_pem = sock.recv(peer_key_len)
-        if not peer_key_pem: raise ConnectionAbortedError("Server ha chiuso durante handshake (recv key)")
+        my_ephemeral_bytes = km.generate_ephemeral_key()
+        sock.sendall(struct.pack('!I', len(my_ephemeral_bytes)) + my_ephemeral_bytes)
 
-        encrypted_secret = km.establish_shared_secret(peer_key_pem)
-        sock.sendall(struct.pack('!I', len(encrypted_secret)) + encrypted_secret)
-        
-        confirm_header = sock.recv(struct.calcsize('!I'))
-        if not confirm_header: raise ConnectionAbortedError("Server ha chiuso durante handshake (recv confirm len)")
-        confirm_len, = struct.unpack('!I', confirm_header)
-        confirm_msg = sock.recv(confirm_len)
-        if not confirm_msg: raise ConnectionAbortedError("Server ha chiuso durante handshake (recv confirm msg)")
+        header = sock.recv(4)
+        if not header: raise ConnectionAbortedError("Server ha chiuso durante handshake")
+        len_s_eph, = struct.unpack('!I', header)
+        server_ephemeral = sock.recv(len_s_eph)
 
-        assert confirm_msg == b"AUTH_OK"
+        header = sock.recv(4)
+        if not header: raise ConnectionAbortedError("Server ha chiuso durante handshake")
+        len_s_id, = struct.unpack('!I', header)
+        server_identity = sock.recv(len_s_id)
+
+        header = sock.recv(4)
+        if not header: raise ConnectionAbortedError("Server ha chiuso durante handshake")
+        len_sig, = struct.unpack('!I', header)
+        signature = sock.recv(len_sig)
+
+        if not (server_ephemeral and server_identity and signature):
+            raise ConnectionAbortedError("Handshake incompleto")
+
+        transcript = my_ephemeral_bytes + server_ephemeral
+        if not km.verify_handshake_signature(server_identity, transcript, signature):
+            raise ConnectionAbortedError("Signature verification failed")
+
+        km.compute_shared_secret(server_ephemeral)
+
+        nonce = os.urandom(12)
+        cipher = Cipher(algorithms.AES(km.current_key), modes.GCM(nonce), backend=default_backend())
+        encryptor = cipher.encryptor()
+        ct = encryptor.update(b"AUTH_OK") + encryptor.finalize()
+        tag = encryptor.tag
+        payload = nonce + tag + ct
+        sock.sendall(struct.pack('!I', len(payload)) + payload)
+
+        header = sock.recv(4)
+        if not header: raise ConnectionAbortedError("Server ha chiuso durante conferma")
+        len_resp, = struct.unpack('!I', header)
+        resp_payload = sock.recv(len_resp)
+        if not resp_payload: raise ConnectionAbortedError("Server ha chiuso durante conferma")
+
+        nonce_s, tag_s, ct_s = resp_payload[:12], resp_payload[12:28], resp_payload[28:]
+        cipher_s = Cipher(algorithms.AES(km.current_key), modes.GCM(nonce_s, tag_s), backend=default_backend())
+        decryptor_s = cipher_s.decryptor()
+        pt_s = decryptor_s.update(ct_s) + decryptor_s.finalize()
+
+        if pt_s != b"AUTH_OK":
+            raise ConnectionAbortedError("Server non ha confermato AUTH_OK")
+
         print("[Fixture] Handshake client malizioso completato.")
-        
+
         yield sock, km
-        
+
     except Exception as e:
         pytest.fail(f"Handshake client malizioso fallito: {e}")
 

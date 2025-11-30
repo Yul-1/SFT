@@ -46,6 +46,8 @@ MAX_RECEIVED_MESSAGES = 1000
 MAX_GLOBAL_CONNECTIONS = 50
 IDLE_TIMEOUT = 60
 OUTPUT_DIR = Path("ricevuti")
+REPLAY_WINDOW_SIZE = 10000
+REPLAY_SEQUENCE_TOLERANCE = 5000
 
 PAYLOAD_TYPE_JSON = 0x01
 PAYLOAD_TYPE_DATA = 0x02
@@ -61,9 +63,10 @@ MESSAGE_SCHEMA = {
         "version": {"type": "string"},
         "timestamp": {"type": "string"},
         "payload": {"type": "object"},
-        "signature": {"type": "string"}
+        "signature": {"type": "string"},
+        "seq": {"type": "integer"}
     },
-    "required": ["type", "version", "timestamp", "payload"]
+    "required": ["type", "version", "timestamp", "payload", "seq"]
 }
 
 HEADER_FORMAT = '!4sI B Q I 16s 12s 16s'
@@ -166,7 +169,6 @@ class SecureKeyManager:
         self.previous_keys: deque[Dict[str, Any]] = deque(maxlen=3)
         
         # Identity Keys (Ed25519) - Long Term
-        # Se siamo il server, usiamo la chiave passata. Se client, generiamo (o restiamo anonimi per ora).
         if identity_key:
             self.identity_private = identity_key
             self.identity_public = identity_key.public_key()
@@ -305,12 +307,66 @@ class SecureKeyManager:
 
 class SecureProtocol:
     """Secure protocol with validation and authentication"""
-    
+
     def __init__(self, key_manager: SecureKeyManager, received_messages_queue: deque):
         self.key_manager = key_manager
         self.rate_limiter = RateLimiter(MAX_REQUESTS_PER_WINDOW, RATE_LIMIT_WINDOW)
         self.received_messages = received_messages_queue
-        
+
+        # Replay Bypass Mitigation: Sequence number tracking
+        self.sequence_number = 0
+        self.peer_sequence_number = 0
+        self.sequence_lock = threading.Lock()
+        self.replay_window: Set[int] = set()
+        self.replay_window_base = 0
+
+    def _get_next_sequence_number(self) -> int:
+        """Get next sequence number for outgoing messages (thread-safe)"""
+        with self.sequence_lock:
+            seq = self.sequence_number
+            self.sequence_number += 1
+            return seq
+
+    def _validate_sequence_number(self, seq: int) -> bool:
+        """
+        Validate incoming sequence number using sliding window algorithm.
+        Prevents replay bypass via FIFO queue flooding.
+        """
+        with self.sequence_lock:
+            # Reject if too old (outside window)
+            if seq < self.replay_window_base:
+                logger.warning(f"Sequence number {seq} is too old (base: {self.replay_window_base})")
+                return False
+
+            # Reject if too far in future (potential attack)
+            if seq > self.replay_window_base + REPLAY_SEQUENCE_TOLERANCE:
+                logger.warning(f"Sequence number {seq} too far ahead (base: {self.replay_window_base})")
+                return False
+
+            # Calculate position in window
+            offset = seq - self.replay_window_base
+
+            # Check if already received
+            if offset in self.replay_window:
+                logger.warning(f"Duplicate sequence number detected: {seq}")
+                return False
+
+            # Add to window
+            self.replay_window.add(offset)
+
+            # Slide window if needed
+            if len(self.replay_window) > REPLAY_WINDOW_SIZE:
+                # Find minimum offset to remove old entries
+                min_offset = min(self.replay_window)
+                self.replay_window = {o - min_offset for o in self.replay_window if o >= min_offset}
+                self.replay_window_base += min_offset
+
+            # Update expected sequence for next message
+            if seq >= self.peer_sequence_number:
+                self.peer_sequence_number = seq + 1
+
+            return True
+
     def sanitize_filename(self, filename: str) -> str:
         """Sanitize filename to prevent path traversal"""
         filename = os.path.basename(filename)
@@ -381,12 +437,12 @@ class SecureProtocol:
             raise
     
     def _create_json_packet(self, msg_type: str, payload: Dict[str, Any], sign: bool = True) -> bytes:
-        """Create JSON packet (Control) with signature and encryption and AAD"""
         message = {
             'type': msg_type,
             'version': PROTOCOL_VERSION,
             'timestamp': datetime.now().isoformat(),
-            'payload': payload
+            'payload': payload,
+            'seq': self._get_next_sequence_number()
         }
         
         if sign and self.key_manager.shared_secret:
@@ -515,7 +571,12 @@ class SecureProtocol:
             except (json.JSONDecodeError, ValidationError) as e:
                 logger.error(f"Invalid message format: {e}")
                 raise ValueError("Invalid message format")
-            
+
+            seq_num = message.get('seq')
+            if seq_num is not None and not self._validate_sequence_number(seq_num):
+                logger.error(f"Invalid or duplicate sequence number: {seq_num}")
+                raise ValueError("Sequence number validation failed (possible replay bypass)")
+
             if 'signature' in message:
                 signature = bytes.fromhex(message['signature'])
                 message_copy = message.copy()
@@ -896,6 +957,12 @@ class SecureFileTransferNode:
                                     final_hash_ok = True
                                 else:
                                     logger.error(f"[{thread_name}] HASH MISMATCH. Expected: {client_hash}, Got: {calculated_hash}")
+                                    logger.warning(f"[{thread_name}] Zombie file protection: Removing corrupted file {file_path.name}")
+                                    try:
+                                        file_path.unlink()
+                                        logger.info(f"[{thread_name}] Corrupted file removed successfully")
+                                    except Exception as del_err:
+                                        logger.error(f"[{thread_name}] Failed to remove corrupted file: {del_err}")
                             except Exception as e:
                                 logger.error(f"[{thread_name}] Failed to verify hash: {e}")
                         else:
@@ -1329,6 +1396,12 @@ class SecureFileTransferNode:
                                     final_hash_ok = True
                                 else:
                                     logger.error(f"HASH MISMATCH. Expected: {client_hash}, Got: {calculated_hash}")
+                                    logger.warning(f"Zombie file protection: Removing corrupted file {file_path.name}")
+                                    try:
+                                        file_path.unlink()
+                                        logger.info(f"Corrupted file removed successfully")
+                                    except Exception as del_err:
+                                        logger.error(f"Failed to remove corrupted file: {del_err}")
                             except Exception as e:
                                 logger.error(f"Failed to verify hash: {e}")
                         else:

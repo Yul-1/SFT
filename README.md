@@ -193,7 +193,8 @@ The system implements defense in depth with multiple protections at every layer:
 | Vulnerability | Implemented Mitigation |
 |--------------|------------------------|
 | DoS/DDoS | Rate limiting, connection limits, timeout, ECDH (no RSA exhaustion) |
-| Replay Attack | Message ID tracking, timestamp validation |
+| Replay Attack | Message ID tracking, timestamp validation, sequence number with sliding window |
+| Replay Bypass | Sliding window algorithm (10000 entries) prevents FIFO queue flooding |
 | Timing Attack | Constant-time comparison (CRYPTO_memcmp) |
 | Path Traversal | Filename sanitization, basename extraction, validation |
 | Memory Leaks | Explicit memory zeroing, automatic cleanup |
@@ -202,6 +203,7 @@ The system implements defense in depth with multiple protections at every layer:
 | Packet Tampering | AAD authentication on all packet headers |
 | Information Leak | Sanitized errors, side-channel protections |
 | Key Exhaustion | ECDH with ephemeral keys (replaces RSA) |
+| Zombie Files | Automatic removal of corrupted files on hash mismatch |
 
 ## 📦 Installation
 
@@ -512,8 +514,8 @@ DEBUG=1 python3 sft.py --mode server --debug
 
 ### Version 2.8 📋
 - [ ] Fingerprint/passphrase authentication to mitigate MitM attacks
-- [ ] Replay bypass mitigation (FIFO queue flooding resets replay memory)
-- [ ] Zombie file protection (corrupted/malicious files remain on disk after hash failure)
+- [x] Replay bypass mitigation (sequence number tracking with sliding window)
+- [x] Zombie file protection (automatic removal of corrupted files after hash verification failure)
 - [ ] File descriptor leak prevention (server crash without closing file handles)
 
 ### Version 3.0 📋
