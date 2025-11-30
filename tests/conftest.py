@@ -12,7 +12,7 @@ from _pytest.monkeypatch import MonkeyPatch
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 # Importa solo dopo aver modificato il path
-from secure_file_transfer_fixed import SecureFileTransferNode, OUTPUT_DIR, DEFAULT_PORT
+from sft import SecureFileTransferNode, OUTPUT_DIR, DEFAULT_PORT
 
 # --- Fixture di Sessione (per server e file) ---
 
@@ -49,9 +49,9 @@ def server_output_dir(tmp_path_factory):
     # Creiamo manualmente un MonkeyPatch session-scoped.
     mp = MonkeyPatch()
     
-    import secure_file_transfer_fixed
+    import sft
     # Applica il patch (object-based, non string-based)
-    mp.setattr(secure_file_transfer_fixed, 'OUTPUT_DIR', server_output_dir)
+    mp.setattr(sft, 'OUTPUT_DIR', server_output_dir)
     
     yield server_output_dir
     

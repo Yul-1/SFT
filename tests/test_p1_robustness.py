@@ -22,7 +22,7 @@ import os
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 try:
-    from secure_file_transfer_fixed import (
+    from sft import (
         SecureFileTransferNode,
         SecureKeyManager,
         SecureProtocol,

@@ -21,12 +21,12 @@ try:
     project_root = Path(__file__).parent.parent
     sys.path.insert(0, str(project_root))
     
-    from secure_file_transfer_fixed import (
+    from sft import (
         SecureFileTransferNode,
         OUTPUT_DIR,
         MAX_GLOBAL_CONNECTIONS
     )
-    from python_wrapper_fixed import (
+    from python_wrapper import (
         SecureCrypto,
         SecurityConfig,
         C_MODULE_AVAILABLE,

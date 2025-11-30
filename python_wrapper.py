@@ -277,7 +277,7 @@ def compile_c_module():
     """Compile C module with security flags (DoS/stack-smashing protection)"""
     print("Attempting to compile C module...")
     
-    c_file_name = "crypto-accelerator-fixed.c"
+    c_file_name = "crypto_accelerator.c"
     
     include_path = sysconfig.get_path('include')
 

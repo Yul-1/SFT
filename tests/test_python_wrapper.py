@@ -24,7 +24,7 @@ try:
     sys.path.insert(0, str(project_root))
     
     # Importiamo il modulo da testare
-    import python_wrapper_fixed as wrapper
+    import python_wrapper as wrapper
     
     # Importiamo il modulo C reale per i test di integrazione
     import crypto_accelerator as crypto_c

@@ -39,7 +39,7 @@ except FileNotFoundError:
 
 # Importiamo i valori MAX/MIN dal wrapper per i test
 try:
-    from python_wrapper_fixed import MAX_BUFFER_SIZE, MIN_BUFFER_SIZE
+    from python_wrapper import MAX_BUFFER_SIZE, MIN_BUFFER_SIZE
 except ImportError:
     print("Errore nell'importare 'python_wrapper_fixed.py' per le costanti.")
     sys.exit(1)

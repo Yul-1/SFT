@@ -23,7 +23,7 @@ from typing import Tuple, Generator, List, Any
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 try:
-    from secure_file_transfer_fixed import (
+    from sft import (
         SecureFileTransferNode,
         OUTPUT_DIR,
         DEFAULT_PORT

@@ -73,7 +73,7 @@ The system is built on three interconnected layers that work in synergy to provi
 ```
 ┌─────────────────────────────────────────────────────────────┐
 │                    Protocol Layer                           │
-│              (secure_file_transfer.py)                      │
+│                       (sft.py)                              │
 │  • TCP connection management                                │
 │  • RSA-OAEP handshake                                       │
 │  • Transfer state machine                                   │
@@ -83,7 +83,7 @@ The system is built on three interconnected layers that work in synergy to provi
                               ▼
 ┌─────────────────────────────────────────────────────────────┐
 │                     Wrapper Layer                           │
-│                 (crypto_wrapper.py)                         │
+│                 (python_wrapper.py)                         │
 │  • Unified cryptographic API                                │
 │  • C/Python fallback management                             │
 │  • Secure key cache                                         │
@@ -220,10 +220,10 @@ venv\Scripts\activate  # Windows
 pip install -r requirements.txt
 
 # 4. Compile C module (optional but recommended)
-python3 crypto_wrapper.py --compile
+python3 python_wrapper.py --compile
 
 # 5. Verify installation
-python3 crypto_wrapper.py --test
+python3 python_wrapper.py --test
 ```
 
 
@@ -234,19 +234,19 @@ python3 crypto_wrapper.py --test
 #### Basic Configuration
 ```bash
 # Start server on default port (5555)
-python3 secure_file_transfer.py --mode server
+python3 sft.py --mode server
 
 # Start on specific port
-python3 secure_file_transfer.py --mode server --port 8080
+python3 sft.py --mode server --port 8080
 
 # Start on specific interface
-python3 secure_file_transfer.py --mode server --host 192.168.1.100 --port 5555
+python3 sft.py --mode server --host 192.168.1.100 --port 5555
 ```
 
 #### Production Configuration
 ```bash
 # Production server with logging
-nohup python3 secure_file_transfer.py --mode server \
+nohup python3 sft.py --mode server \
     --host 0.0.0.0 \
     --port 5555 > server.log 2>&1 &
 ```
@@ -256,12 +256,12 @@ nohup python3 secure_file_transfer.py --mode server \
 #### Upload File
 ```bash
 # Upload file to server
-python3 secure_file_transfer.py --mode client \
+python3 sft.py --mode client \
     --connect 192.168.1.100:5555 \
     --file /path/to/document.pdf
 
 # Upload with progress
-python3 secure_file_transfer.py --mode client \
+python3 sft.py --mode client \
     --connect server.example.com:5555 \
     --file large_file.zip
 ```
@@ -269,7 +269,7 @@ python3 secure_file_transfer.py --mode client \
 #### List Remote Files
 ```bash
 # List available files on server
-python3 secure_file_transfer.py --mode client \
+python3 sft.py --mode client \
     --connect 192.168.1.100:5555 \
     --list
 ```
@@ -277,18 +277,18 @@ python3 secure_file_transfer.py --mode client \
 #### Download File
 ```bash
 # Download specific file
-python3 secure_file_transfer.py --mode client \
+python3 sft.py --mode client \
     --connect 192.168.1.100:5555 \
     --download document.pdf
 
 # Download to specific directory
-python3 secure_file_transfer.py --mode client \
+python3 sft.py --mode client \
     --connect 192.168.1.100:5555 \
     --download backup.tar.gz \
     --output /home/user/downloads/
 
 # Resume interrupted download
-python3 secure_file_transfer.py --mode client \
+python3 sft.py --mode client \
     --connect 192.168.1.100:5555 \
     --download large_file.iso \
     --output ./downloads/
@@ -299,21 +299,21 @@ python3 secure_file_transfer.py --mode client \
 #### Bidirectional Secure Backup
 ```bash
 # Backup server
-python3 secure_file_transfer.py --mode server --port 8888
+python3 sft.py --mode server --port 8888
 
 # Client - send backup
-python3 secure_file_transfer.py --mode client \
+python3 sft.py --mode client \
     --connect backup-server:8888 \
     --file /path/to/backup.tar.gz
 
 # Client - retrieve previous backups
 # 1. List available backups
-python3 secure_file_transfer.py --mode client \
+python3 sft.py --mode client \
     --connect backup-server:8888 \
     --list
 
 # 2. Download specific backup
-python3 secure_file_transfer.py --mode client \
+python3 sft.py --mode client \
     --connect backup-server:8888 \
     --download backup_2024-11-22.tar.gz \
     --output /restore/
@@ -328,7 +328,7 @@ import time
 def transfer_with_monitoring(server, file_path):
     """Transfer file with status monitoring"""
     cmd = [
-        "python3", "secure_file_transfer.py",
+        "python3", "sft.py",
         "--mode", "client",
         "--connect", server,
         "--file", file_path
@@ -371,11 +371,11 @@ python3 -m pytest tests/test_concurrency.py -v         # Concurrency tests
 
 ```bash
 # Cryptographic benchmark
-python3 crypto_wrapper.py --benchmark
+python3 python_wrapper.py --benchmark
 
 # Large file transfer test
 dd if=/dev/urandom of=test_1gb.bin bs=1M count=1024
-time python3 secure_file_transfer.py --mode client \
+time python3 sft.py --mode client \
     --connect localhost:5555 --file test_1gb.bin
 ```
 
@@ -403,8 +403,8 @@ time python3 secure_file_transfer.py --mode client \
 
 ```
 SFT/
-├── secure_file_transfer.py        # Main protocol (v2.6)
-├── crypto_wrapper.py               # Cryptographic wrapper
+├── sft.py                          # Main protocol (v2.6)
+├── python_wrapper.py               # Cryptographic wrapper
 ├── crypto_accelerator.c            # C module (source)
 ├── crypto_accelerator.so           # Compiled C module
 ├── requirements.txt                # Python dependencies
@@ -439,7 +439,7 @@ gcc -shared -fPIC -g -O0 -DDEBUG \
     crypto_accelerator.c -o crypto_accelerator.so -lcrypto
 
 # Run with debug logging
-DEBUG=1 python3 secure_file_transfer.py --mode server --debug
+DEBUG=1 python3 sft.py --mode server --debug
 ```
 
 ### Contributing Guidelines
@@ -522,13 +522,11 @@ This project is distributed under the MIT License.
 
 - **GitHub**: [@Yul-1](https://github.com/Yul-1)
 - **Issues**: [GitHub Issues](https://github.com/Yul-1/SFT/issues)
-
+- **Mail**: [yul.cysec@gmail.com]
 ---
 
 <div align="center">
   
 **[⬆ Back to top](#-secure-file-transfer-system)**
-
-Made with ❤️ and 🔒 by the Secure File Transfer Team
 
 </div>

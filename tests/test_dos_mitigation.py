@@ -11,7 +11,7 @@ import sys
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 # 🟢 FIX: Importa OUTPUT_DIR (che sarà patchato da conftest)
-from secure_file_transfer_fixed import SecureFileTransferNode, DEFAULT_PORT, OUTPUT_DIR
+from sft import SecureFileTransferNode, DEFAULT_PORT, OUTPUT_DIR
 
 # --- Fixture per il Server e il File di Test ---
 
