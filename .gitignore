@@ -17,3 +17,5 @@ ricevuti/
 file.txt
 crypto_accelerator.so
 tests/*.pcapng
+tests/*.csv
+tests/*.txt

@@ -208,8 +208,8 @@ class SecureCrypto:
             self._key_cache.clear()
             self._key_cache_order.clear()
 
-    def encrypt_aes_gcm(self, data: bytes, key: bytes, iv: bytes) -> Tuple[bytes, bytes]:
-        """ AES-256-GCM encryption with fallback """
+    def encrypt_aes_gcm(self, data: bytes, key: bytes, iv: bytes, aad: bytes = None) -> Tuple[bytes, bytes]:
+        """ AES-256-GCM encryption with fallback and AAD support """
         self._validate_size(len(data), "Plaintext")
         
         with self._secure_operation("encrypt"):
@@ -217,7 +217,8 @@ class SecureCrypto:
                 try:
                     with self._lock:
                         self.stats['c_module_used'] += 1
-                    return crypto_c.aes_gcm_encrypt(data, key, iv)
+                    # Pass aad to C module (if aad is None, the C module handles it as empty optional)
+                    return crypto_c.aes_gcm_encrypt(data, key, iv, aad if aad else b"")
                 except Exception as e:
                     logger.debug(f"C module failed for encrypt, falling back: {e}")
                     with self._lock:
@@ -231,12 +232,14 @@ class SecureCrypto:
                 
             cipher = Cipher(algorithms.AES(key), modes.GCM(iv), backend=default_backend())
             encryptor = cipher.encryptor()
+            if aad:
+                encryptor.authenticate_additional_data(aad)
             ciphertext = encryptor.update(data) + encryptor.finalize()
             tag = encryptor.tag
             return ciphertext, tag
 
-    def decrypt_aes_gcm(self, ciphertext: bytes, key: bytes, iv: bytes, tag: bytes) -> bytes:
-        """ AES-256-GCM decryption with fallback """
+    def decrypt_aes_gcm(self, ciphertext: bytes, key: bytes, iv: bytes, tag: bytes, aad: bytes = None) -> bytes:
+        """ AES-256-GCM decryption with fallback and AAD support """
         self._validate_size(len(ciphertext), "Ciphertext")
 
         with self._secure_operation("decrypt"):
@@ -244,7 +247,7 @@ class SecureCrypto:
                 try:
                     with self._lock:
                         self.stats['c_module_used'] += 1
-                    return crypto_c.aes_gcm_decrypt(ciphertext, key, iv, tag)
+                    return crypto_c.aes_gcm_decrypt(ciphertext, key, iv, tag, aad if aad else b"")
                 except Exception as e:
                     logger.debug(f"C module failed for decrypt, falling back: {e}")
                     with self._lock:
@@ -258,6 +261,8 @@ class SecureCrypto:
             try:
                 cipher = Cipher(algorithms.AES(key), modes.GCM(iv, tag), backend=default_backend())
                 decryptor = cipher.decryptor()
+                if aad:
+                    decryptor.authenticate_additional_data(aad)
                 return decryptor.update(ciphertext) + decryptor.finalize()
             except Exception as e:
                 raise ValueError(f"Decryption/Authentication failed: {e}")
@@ -324,21 +329,28 @@ def test_integration():
     
     plaintext = b"This is a secret message" * 10
     iv = crypto.generate_random(AES_NONCE_SIZE)
+    aad = b"header_data"
     
     try:
-        ciphertext, tag = crypto.encrypt_aes_gcm(plaintext, key, iv)
-        decrypted = crypto.decrypt_aes_gcm(ciphertext, key, iv, tag)
+        ciphertext, tag = crypto.encrypt_aes_gcm(plaintext, key, iv, aad=aad)
+        decrypted = crypto.decrypt_aes_gcm(ciphertext, key, iv, tag, aad=aad)
         assert plaintext == decrypted
-        print("Encryption/Decryption successful.")
+        print("Encryption/Decryption with AAD successful.")
     except Exception as e:
         print(f"Encryption/Decryption failed: {e}")
         return
         
     try:
-        crypto.decrypt_aes_gcm(ciphertext, key, iv, b'\x00' * AES_TAG_SIZE)
+        crypto.decrypt_aes_gcm(ciphertext, key, iv, b'\x00' * AES_TAG_SIZE, aad=aad)
         assert False, "Authentication tag check failed to raise error"
     except ValueError as e:
         print(f"Authentication failure caught: {e}")
+
+    try:
+        crypto.decrypt_aes_gcm(ciphertext, key, iv, tag, aad=b"corrupted_header")
+        assert False, "AAD check failed to raise error"
+    except ValueError as e:
+        print(f"AAD mismatch failure caught: {e}")
     
     print("--- Tests Complete ---")
 
@@ -365,7 +377,7 @@ def benchmark_comparison():
     if crypto.use_c:
         try:
             print("C Module Encryption:")
-            run_op(lambda: crypto_c.aes_gcm_encrypt(data, key, iv), "C Encrypt")
+            run_op(lambda: crypto_c.aes_gcm_encrypt(data, key, iv, b""), "C Encrypt")
         except Exception:
             print("C Encrypt failed, skipping.")
 

@@ -341,33 +341,36 @@ class SecureProtocol:
             filename = f"safe_{filename}"
         return filename or "unnamed_file"
     
-    def encrypt_data(self, data: bytes, key: bytes = None) -> Tuple[bytes, str, bytes, bytes]:
-        """Encrypt with AES-256-GCM. If an external key is provided, the key_id is derived from the key itself."""
+    def encrypt_data(self, data: bytes, key: bytes = None, nonce: bytes = None, aad: bytes = None) -> Tuple[bytes, str, bytes, bytes]:
+        """Encrypt with AES-256-GCM. Supports explicit Nonce and AAD."""
         with self.key_manager._lock:
             if key is None:
                 key = self.key_manager.current_key
                 key_id = self.key_manager.key_id
             else:
                 key_id = hashlib.sha256(key).hexdigest()[:16]
-                
                 if self.key_manager.get_key_by_id(key_id) is None:
                     self.key_manager.add_external_key_to_cache(key, key_id)
         
         if not key:
             raise ValueError("No encryption key available")
             
-        nonce = secrets.token_bytes(12)
+        if nonce is None:
+            nonce = secrets.token_bytes(12)
         
         cipher = Cipher(algorithms.AES(key), modes.GCM(nonce), backend=default_backend())
         encryptor = cipher.encryptor()
         
+        if aad:
+            encryptor.authenticate_additional_data(aad)
+            
         ciphertext = encryptor.update(data) + encryptor.finalize()
         tag = encryptor.tag
         
         return ciphertext, key_id, nonce, tag
     
-    def decrypt_data(self, ciphertext: bytes, key_id: str, nonce: bytes, tag: bytes) -> bytes:
-        """Decrypt with validation"""
+    def decrypt_data(self, ciphertext: bytes, key_id: str, nonce: bytes, tag: bytes, aad: bytes = None) -> bytes:
+        """Decrypt with validation and AAD"""
         with self.key_manager._lock:
             key = self.key_manager.get_key_by_id(key_id)
         
@@ -378,6 +381,9 @@ class SecureProtocol:
         cipher = Cipher(algorithms.AES(key), modes.GCM(nonce, tag), backend=default_backend())
         decryptor = cipher.decryptor()
         
+        if aad:
+            decryptor.authenticate_additional_data(aad)
+
         try:
             plaintext = decryptor.update(ciphertext) + decryptor.finalize()
             return plaintext
@@ -386,7 +392,7 @@ class SecureProtocol:
             raise
     
     def _create_json_packet(self, msg_type: str, payload: Dict[str, Any], sign: bool = True) -> bytes:
-        """Create JSON packet (Control) with signature and encryption"""
+        """Create JSON packet (Control) with signature and encryption and AAD"""
         message = {
             'type': msg_type,
             'version': PROTOCOL_VERSION,
@@ -410,7 +416,22 @@ class SecureProtocol:
         if len(json_data) > MAX_PACKET_SIZE:
             raise ValueError(f"Packet too large: {len(json_data)} bytes")
         
-        ciphertext, key_id, nonce, tag = self.encrypt_data(json_data)
+        # AAD Construction
+        with self.key_manager._lock:
+            current_key = self.key_manager.current_key
+            key_id = self.key_manager.key_id
+            
+        nonce = secrets.token_bytes(12)
+        ciphertext_len = len(json_data)
+        key_id_bytes = key_id.encode('utf-8')[:16].ljust(16, b'\x00')
+        
+        aad = struct.pack(
+            '!4sI B Q I 16s 12s',
+            b'SFTP', 2, PAYLOAD_TYPE_JSON, 0, ciphertext_len,
+            key_id_bytes, nonce
+        )
+        
+        ciphertext, key_id, nonce, tag = self.encrypt_data(json_data, key=current_key, nonce=nonce, aad=aad)
         
         header = struct.pack(
             HEADER_FORMAT,
@@ -419,7 +440,7 @@ class SecureProtocol:
             PAYLOAD_TYPE_JSON,
             0,
             len(ciphertext),
-            key_id.encode('utf-8')[:16].ljust(16, b'\x00'),
+            key_id_bytes,
             nonce,
             tag
         )
@@ -427,11 +448,26 @@ class SecureProtocol:
         return header + ciphertext
     
     def _create_data_packet(self, data: bytes, offset: int) -> bytes:
-        """Create Data packet (Chunk) with encryption"""
+        """Create Data packet (Chunk) with encryption and AAD"""
         if len(data) > MAX_PACKET_SIZE:
              raise ValueError(f"Data chunk too large: {len(data)} bytes")
-             
-        ciphertext, key_id, nonce, tag = self.encrypt_data(data)
+        
+        with self.key_manager._lock:
+            current_key = self.key_manager.current_key
+            key_id = self.key_manager.key_id
+
+        nonce = secrets.token_bytes(12)
+        
+        ciphertext_len = len(data) 
+        key_id_bytes = key_id.encode('utf-8')[:16].ljust(16, b'\x00')
+        
+        aad = struct.pack(
+            '!4sI B Q I 16s 12s',
+            b'SFTP', 2, PAYLOAD_TYPE_DATA, offset, ciphertext_len,
+            key_id_bytes, nonce
+        )
+
+        ciphertext, key_id, nonce, tag = self.encrypt_data(data, key=current_key, nonce=nonce, aad=aad)
 
         header = struct.pack(
             HEADER_FORMAT,
@@ -440,7 +476,7 @@ class SecureProtocol:
             PAYLOAD_TYPE_DATA,
             offset,
             len(ciphertext),
-            key_id.encode('utf-8')[:16].ljust(16, b'\x00'),
+            key_id_bytes,
             nonce,
             tag
         )
@@ -449,10 +485,7 @@ class SecureProtocol:
 
     def parse_packet(self, data: bytes, client_id: str) -> Tuple[str, Any, int]:
         """
-        Analyze packet with rate limiting and replay protection.
-        Returns (packet_type, payload, offset)
-        'json' -> (payload is a dict)
-        'data' -> (payload is bytes)
+        Analyze packet with rate limiting, replay protection, and AAD validation.
         """
         
         if len(data) < HEADER_PACKET_SIZE:
@@ -460,6 +493,12 @@ class SecureProtocol:
         
         magic, version, payload_type, offset, payload_len, key_id_raw, nonce, tag = struct.unpack(
             HEADER_FORMAT, data[:HEADER_PACKET_SIZE] 
+        )
+        
+        # Construct AAD from header fields to verify integrity
+        aad = struct.pack(
+            '!4sI B Q I 16s 12s',
+            magic, version, payload_type, offset, payload_len, key_id_raw, nonce
         )
         
         if magic != b'SFTP':
@@ -474,7 +513,9 @@ class SecureProtocol:
         key_id = key_id_raw.rstrip(b'\x00').decode('utf-8')
         
         ciphertext = data[HEADER_PACKET_SIZE : HEADER_PACKET_SIZE + payload_len]
-        plaintext = self.decrypt_data(ciphertext, key_id, nonce, tag)
+        
+        # Pass AAD to decrypt
+        plaintext = self.decrypt_data(ciphertext, key_id, nonce, tag, aad=aad)
         
         if payload_type == PAYLOAD_TYPE_JSON:
             

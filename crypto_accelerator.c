@@ -37,9 +37,6 @@ static int validate_buffer_size(Py_ssize_t size, Py_ssize_t min, Py_ssize_t max,
     return 1;
 }
 
-
-
-
 static PyObject* aes_gcm_encrypt_safe(PyObject* self, PyObject* args) {
     PyObject* result_tuple = NULL;
     PyObject* ciphertext_obj = NULL;
@@ -48,7 +45,8 @@ static PyObject* aes_gcm_encrypt_safe(PyObject* self, PyObject* args) {
     const unsigned char *plaintext = NULL;
     const unsigned char *key = NULL;
     const unsigned char *iv = NULL;
-    Py_ssize_t plaintext_len, key_len, iv_len;
+    const unsigned char *aad = NULL; 
+    Py_ssize_t plaintext_len, key_len, iv_len, aad_len = 0;
 
     unsigned char *ciphertext_buf = NULL;
     unsigned char *tag_buf = NULL;
@@ -56,7 +54,7 @@ static PyObject* aes_gcm_encrypt_safe(PyObject* self, PyObject* args) {
     EVP_CIPHER_CTX *ctx = NULL;
     int len, ciphertext_len;
 
-    if (!PyArg_ParseTuple(args, "y#y#y#", &plaintext, &plaintext_len, &key, &key_len, &iv, &iv_len)) {
+    if (!PyArg_ParseTuple(args, "y#y#y#|y#", &plaintext, &plaintext_len, &key, &key_len, &iv, &iv_len, &aad, &aad_len)) {
         return NULL;
     }
 
@@ -85,6 +83,11 @@ static PyObject* aes_gcm_encrypt_safe(PyObject* self, PyObject* args) {
 
     CHECK_SSL_SUCCESS(EVP_EncryptInit_ex(ctx, EVP_aes_256_gcm(), NULL, NULL, NULL));
     CHECK_SSL_SUCCESS(EVP_EncryptInit_ex(ctx, NULL, NULL, key, iv));
+
+    if (aad && aad_len > 0) {
+        int outlen;
+        CHECK_SSL_SUCCESS(EVP_EncryptUpdate(ctx, NULL, &outlen, aad, (int)aad_len));
+    }
 
     CHECK_SSL_SUCCESS(EVP_EncryptUpdate(ctx, ciphertext_buf, &len, plaintext, (int)plaintext_len));
     ciphertext_len = len;
@@ -132,11 +135,9 @@ cleanup:
         Py_XDECREF(ciphertext_obj);
         Py_XDECREF(tag_obj);
     }
-    
 
     return result_tuple;
 }
-
 
 static PyObject* aes_gcm_decrypt_safe(PyObject* self, PyObject* args) {
     PyObject* plaintext_obj = NULL;
@@ -145,14 +146,15 @@ static PyObject* aes_gcm_decrypt_safe(PyObject* self, PyObject* args) {
     const unsigned char *key = NULL;
     const unsigned char *iv = NULL;
     const unsigned char *tag = NULL;
-    Py_ssize_t ciphertext_len, key_len, iv_len, tag_len;
+    const unsigned char *aad = NULL;
+    Py_ssize_t ciphertext_len, key_len, iv_len, tag_len, aad_len = 0;
 
     unsigned char *plaintext_buf = NULL;
     
     EVP_CIPHER_CTX *ctx = NULL;
     int len, plaintext_len;
     
-    if (!PyArg_ParseTuple(args, "y#y#y#y#", &ciphertext, &ciphertext_len, &key, &key_len, &iv, &iv_len, &tag, &tag_len)) {
+    if (!PyArg_ParseTuple(args, "y#y#y#y#|y#", &ciphertext, &ciphertext_len, &key, &key_len, &iv, &iv_len, &tag, &tag_len, &aad, &aad_len)) {
         return NULL;
     }
 
@@ -181,6 +183,11 @@ static PyObject* aes_gcm_decrypt_safe(PyObject* self, PyObject* args) {
     CHECK_SSL_SUCCESS(EVP_DecryptInit_ex(ctx, EVP_aes_256_gcm(), NULL, NULL, NULL));
     CHECK_SSL_SUCCESS(EVP_DecryptInit_ex(ctx, NULL, NULL, key, iv));
 
+    if (aad && aad_len > 0) {
+        int outlen;
+        CHECK_SSL_SUCCESS(EVP_DecryptUpdate(ctx, NULL, &outlen, aad, (int)aad_len));
+    }
+
     CHECK_SSL_SUCCESS(EVP_DecryptUpdate(ctx, plaintext_buf, &len, ciphertext, (int)ciphertext_len));
     plaintext_len = len;
 
@@ -204,11 +211,9 @@ cleanup:
         secure_memzero(plaintext_buf, ciphertext_len + EVP_MAX_BLOCK_LENGTH);
         PyMem_Free(plaintext_buf);
     }
-    
 
     return plaintext_obj;
 }
-
 
 static PyObject* generate_secure_random_safe(PyObject* self, PyObject* args) {
     Py_ssize_t num_bytes;
@@ -253,7 +258,6 @@ cleanup:
     return random_bytes_obj;
 }
 
-
 static PyObject* sha256_hash_safe(PyObject* self, PyObject* args) {
     const unsigned char *data;
     Py_ssize_t data_len;
@@ -287,7 +291,6 @@ static PyObject* sha256_hash_safe(PyObject* self, PyObject* args) {
     return PyBytes_FromStringAndSize((char*)hash_buf, SHA256_DIGEST_LENGTH);
 }
 
-
 static PyObject* compare_digest_safe(PyObject* self, PyObject* args) {
     const unsigned char *a, *b;
     Py_ssize_t a_len, b_len;
@@ -316,17 +319,15 @@ static PyObject* compare_digest_safe(PyObject* self, PyObject* args) {
     }
 }
 
-
 static PyObject* benchmark_crypto_safe(PyObject* self, PyObject* args) {
     Py_RETURN_NONE;
 }
 
-
 static PyMethodDef CryptoMethods[] = {
     {"aes_gcm_encrypt", aes_gcm_encrypt_safe, METH_VARARGS,
-     "Secure AES-GCM encryption with bounds checking"},
+     "Secure AES-GCM encryption with bounds checking and optional AAD"},
     {"aes_gcm_decrypt", aes_gcm_decrypt_safe, METH_VARARGS,
-     "Secure AES-GCM decryption with auth tag checking"},
+     "Secure AES-GCM decryption with auth tag checking and optional AAD"},
     {"generate_secure_random", generate_secure_random_safe, METH_VARARGS,
      "Generate cryptographically secure random bytes"},
     {"sha256_hash", sha256_hash_safe, METH_VARARGS,
@@ -347,11 +348,8 @@ static struct PyModuleDef cryptomodule = {
 };
 
 PyMODINIT_FUNC PyInit_crypto_accelerator(void) {
-    
     #if OPENSSL_VERSION_NUMBER < 0x10100000L
         OpenSSL_add_all_algorithms();
     #endif
-    
-    
     return PyModule_Create(&cryptomodule);
 }
