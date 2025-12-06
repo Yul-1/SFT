@@ -20,6 +20,7 @@ import re
 import logging
 import ipaddress
 import select
+import socks
 from pathlib import Path
 from typing import Tuple, Optional, Dict, Any, Set
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
@@ -613,10 +614,11 @@ class SecureProtocol:
 
 class SecureFileTransferNode:
     """Secure file transfer node with DoS management"""
-    def __init__(self, mode: str, host: str = '0.0.0.0', port: int = DEFAULT_PORT):
+    def __init__(self, mode: str, host: str = '0.0.0.0', port: int = DEFAULT_PORT, proxy_info: Optional[Dict[str, Any]] = None):
         self.mode = mode
         self.host = host
         self.port = port
+        self.proxy_info = proxy_info
         self.identity = f"{mode}_{secrets.token_hex(4)}"
         self.server_identity_key = None
         
@@ -1130,7 +1132,7 @@ class SecureFileTransferNode:
         """Connects securely to the server and performs the handshake"""
         self.running = True
         self.peer_address = host
-        self.peer_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.peer_socket = self._create_socket()
         self.peer_socket.settimeout(SOCKET_TIMEOUT)
         
         try:
@@ -1147,7 +1149,39 @@ class SecureFileTransferNode:
             self.shutdown()
             raise
 
-    def _internal_send_file_logic(
+    def _create_socket(self) -> socket.socket:
+        """Creates a socket, applying proxy settings if available."""
+        if not self.proxy_info or not self.proxy_info.get("type"):
+            return socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+
+        proxy_type_str = self.proxy_info["type"].lower()
+        proxy_host = self.proxy_info["host"]
+        proxy_port = self.proxy_info["port"]
+        proxy_user = self.proxy_info.get("user")
+        proxy_pass = self.proxy_info.get("pass")
+
+        if proxy_type_str == "socks5":
+            proxy_type = socks.SOCKS5
+        elif proxy_type_str == "socks4":
+            proxy_type = socks.SOCKS4
+        elif proxy_type_str == "http":
+            proxy_type = socks.HTTP
+        else:
+            raise ValueError(f"Unsupported proxy type: {proxy_type_str}")
+
+        logger.info(f"Creating SOCKS {proxy_type_str} socket via {proxy_host}:{proxy_port}")
+        
+        s = socks.socksocket()
+        s.set_proxy(
+            proxy_type,
+            proxy_host,
+            proxy_port,
+            username=proxy_user,
+            password=proxy_pass
+        )
+        return s
+
+    def _internal_send_file_logic( 
         self, 
         sock: socket.socket, 
         protocol: SecureProtocol, 
@@ -1487,11 +1521,18 @@ def simple_progress_callback(filename: str, current_bytes: int, total_bytes: int
         print("\nTransfer completed.")
 
 def main():
-    parser = argparse.ArgumentParser(description="Secure File Transfer Node (v2.6 - Bidirectional)")
+    parser = argparse.ArgumentParser(description="Secure File Transfer Node (v2.7 - Bidirectional & Proxy)")
     parser.add_argument('--mode', choices=['server', 'client'], required=True, help='Run as server or client')
     parser.add_argument('--host', type=str, default='0.0.0.0', help='Binding host IP for server')
     parser.add_argument('--port', type=int, default=DEFAULT_PORT, help='Port number')
     parser.add_argument('--connect', type=str, help='Server IP:Port to connect (client mode)')
+    
+    # Proxy arguments
+    parser.add_argument('--proxy-type', choices=['socks4', 'socks5', 'http'], help='Proxy type')
+    parser.add_argument('--proxy-host', type=str, help='Proxy host IP')
+    parser.add_argument('--proxy-port', type=int, help='Proxy port')
+    parser.add_argument('--proxy-user', type=str, help='Proxy username')
+    parser.add_argument('--proxy-pass', type=str, help='Proxy password')
     
     parser.add_argument('--file', type=str, help='Path to the file to UPLOAD (client mode)')
     parser.add_argument('--list', action='store_true', help='List remote files on server (client mode)')
@@ -1499,8 +1540,18 @@ def main():
     parser.add_argument('--output', type=str, default='.', help='Local directory or path to save downloaded file (default: current dir)')
     
     args = parser.parse_args()
+
+    proxy_info = None
+    if args.proxy_type and args.proxy_host and args.proxy_port:
+        proxy_info = {
+            "type": args.proxy_type,
+            "host": args.proxy_host,
+            "port": args.proxy_port,
+            "user": args.proxy_user,
+            "pass": args.proxy_pass
+        }
     
-    node = SecureFileTransferNode(args.mode, args.host, args.port)
+    node = SecureFileTransferNode(args.mode, args.host, args.port, proxy_info=proxy_info)
     
     try:
         if args.mode == 'server':
@@ -1535,7 +1586,9 @@ def main():
                 return
 
             try:
-                socket.gethostbyname(server_host)
+                # If using a proxy, we don't resolve the target host locally
+                if not proxy_info:
+                    socket.gethostbyname(server_host)
                 try:
                     ipaddress.ip_address(server_host)
                 except ValueError:

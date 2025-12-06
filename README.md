@@ -25,16 +25,17 @@
 
 Secure File Transfer is a **bidirectional** secure file transfer system designed from the ground up with a "security-first" architecture. The project combines the speed of hardware-accelerated cryptography in C with the security and flexibility of Python, creating a robust solution for secure file transfer over untrusted networks.
 
-**Current version: 2.7** - Complete support for upload, download, and remote file listing with enhanced cryptographic security.
+Secure File Transfer Node (v2.7 - Bidirectional & Proxy)
 
 ### Why Secure File Transfer?
 
 While established protocols like SCP and SFTP exist, Secure File Transfer serves as an in-depth study on implementing secure multi-layered software. The system implements advanced countermeasures against common vulnerabilities, offering a modern alternative with particular focus on memory security and resistance to sophisticated attacks.
 
-### Key Features v2.7
+### Key Features v2.8
 - **Secure upload** of files to the server
 - **Secure download** of files from the server
 - **Remote listing** to view available files
+- **Proxy Support** for SOCKS4, SOCKS5 and HTTP
 - **Automatic resume** of interrupted transfers
 - **End-to-end encryption** with AES-256-GCM and ECDH (X25519)
 - **Digital signatures** with Ed25519 for authentication
@@ -277,6 +278,25 @@ nohup python3 sft.py --mode server \
 ```
 
 ### Client Operations
+
+#### Proxy Support
+The client supports connecting to the server through a SOCKS4, SOCKS5 or HTTP proxy.
+The following arguments can be used to configure the proxy:
+- `--proxy-type`: The proxy type (socks4, socks5, http)
+- `--proxy-host`: The proxy host
+- `--proxy-port`: The proxy port
+- `--proxy-user`: The proxy username
+- `--proxy-pass`: The proxy password
+
+Example:
+```bash
+python3 sft.py --mode client \
+    --connect server.example.com:5555 \
+    --file large_file.zip \
+    --proxy-type socks5 \
+    --proxy-host 127.0.0.1 \
+    --proxy-port 1080
+```
 
 #### Upload File
 ```bash
