@@ -655,13 +655,25 @@ class SecureFileTransferNode:
             try:
                 packet = sock.recv(length - len(data))
                 if not packet:
+                    # Peer closed connection cleanly
+                    logger.warning(f"Peer closed connection (received 0 bytes). Expected {length}, got {len(data)} bytes so far.")
                     return None
                 data += packet
             except socket.timeout:
-                logger.warning(f"Socket timeout during reception")
+                logger.warning(f"Socket timeout during reception (timeout={sock.gettimeout()}s)")
+                return None
+            except ConnectionResetError as e:
+                logger.error(f"Connection reset by peer: {e}")
+                return None
+            except ConnectionAbortedError as e:
+                logger.error(f"Connection aborted: {e}")
+                return None
+            except OSError as e:
+                # Covers ECONNREFUSED, EHOSTUNREACH, etc.
+                logger.error(f"OS-level socket error during recv: {e} (errno: {e.errno if hasattr(e, 'errno') else 'N/A'})")
                 return None
             except Exception as e:
-                logger.error(f"Error receiving data: {e}")
+                logger.error(f"Unexpected error receiving data: {e}", exc_info=True)
                 return None
         return data
 
@@ -1134,18 +1146,38 @@ class SecureFileTransferNode:
         self.peer_address = host
         self.peer_socket = self._create_socket()
         self.peer_socket.settimeout(SOCKET_TIMEOUT)
-        
+
         try:
             logger.info(f"Connecting to {host}:{port}...")
             self.peer_socket.connect((host, port))
-            
+
             if not self._perform_secure_handshake(self.peer_socket, self.peer_address):
                 raise ConnectionRefusedError("Secure handshake failed.")
-                
+
             logger.info("Connection successful. Ready to send files.")
 
-        except (socket.error, ConnectionRefusedError) as e:
-            logger.error(f"Connection failed: {e}")
+        except ConnectionRefusedError as e:
+            if self.proxy_info:
+                logger.error(f"Connection refused. Proxy reached {host}:{port} but no server is listening.")
+                logger.error(f"Verify the target server is running: python3 sft.py --mode server --port {port}")
+            else:
+                logger.error(f"Connection refused: {e}")
+            self.shutdown()
+            raise
+        except socks.ProxyConnectionError as e:
+            logger.error(f"Proxy failed to connect to target {host}:{port}: {e}")
+            logger.error("Possible causes: server not running, firewall blocking, or network unreachable")
+            self.shutdown()
+            raise ConnectionError(f"Proxy connection to {host}:{port} failed: {e}")
+        except socket.timeout as e:
+            logger.error(f"Connection timeout to {host}:{port}: {e}")
+            if self.proxy_info:
+                logger.error(f"Check: 1) Proxy at {self.proxy_info['host']}:{self.proxy_info['port']} is reachable")
+                logger.error(f"       2) Target server at {host}:{port} is reachable from proxy")
+            self.shutdown()
+            raise
+        except socket.error as e:
+            logger.error(f"Socket error during connection: {e}")
             self.shutdown()
             raise
 
