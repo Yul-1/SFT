@@ -293,6 +293,39 @@ python3 python_wrapper.py --test
 
 **Note:** The C module is optional. If compilation fails, SFT will automatically fall back to pure Python cryptography with reduced performance.
 
+### Troubleshooting
+
+#### ModuleNotFoundError: No module named 'socks'
+
+**Cause:** Dependencies not installed or running outside virtual environment.
+
+**Solution:**
+```bash
+# Ensure you are in the virtual environment
+source venv/bin/activate  # Linux/macOS
+# or
+venv\Scripts\activate  # Windows
+
+# Verify activation (should show venv path)
+which python3
+
+# Install dependencies
+pip install -r requirements.txt
+
+# Verify PySocks installation
+python3 -c "import socks; print(socks.__version__)"
+```
+
+#### C Module Compilation Fails
+
+**Cause:** Missing system dependencies (GCC, OpenSSL headers, Python dev headers).
+
+**Solution:** Install system prerequisites from the "Prerequisites" section above, then retry:
+```bash
+python3 python_wrapper.py --compile
+```
+
+**Fallback:** The system automatically uses pure Python cryptography if C module is unavailable.
 
 ## Usage
 
