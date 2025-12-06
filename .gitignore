@@ -6,6 +6,7 @@ __pycache__/
 
 # Virtual environment
 venv/
+.venv/
 *.env
 
 # Log e file di output
@@ -17,4 +18,5 @@ ricevuti/
 file.txt
 crypto_accelerator.so
 tests/*.pcapng
+tests/*.csv
 tests/*.txt

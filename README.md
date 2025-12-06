@@ -3,6 +3,7 @@
 [![Python Version](https://img.shields.io/badge/python-3.9%2B-blue)](https://www.python.org/)
 [![Version](https://img.shields.io/badge/version-2.7-blue)](https://github.com/Yul-1/SFT)
 [![Security](https://img.shields.io/badge/security-hardened-blueviolet)](https://github.com/Yul-1/SFT)
+[![Proxy Support](https://img.shields.io/badge/proxy-SOCKS4%2F5%20%7C%20HTTP-green)](https://github.com/Yul-1/SFT)
 [![Tests](https://img.shields.io/badge/tests-comprehensive-success)](https://github.com/Yul-1/SFT)
 [![License](https://img.shields.io/badge/license-MIT-green)](https://github.com/Yul-1/SFT)
 
@@ -25,21 +26,23 @@
 
 Secure File Transfer is a **bidirectional** secure file transfer system designed from the ground up with a "security-first" architecture. The project combines the speed of hardware-accelerated cryptography in C with the security and flexibility of Python, creating a robust solution for secure file transfer over untrusted networks.
 
-Secure File Transfer Node (v2.7 - Bidirectional & Proxy)
+**Current version: 2.7** - Complete support for upload, download, remote file listing, and proxy connectivity with enhanced cryptographic security.
 
 ### Why Secure File Transfer?
 
 While established protocols like SCP and SFTP exist, Secure File Transfer serves as an in-depth study on implementing secure multi-layered software. The system implements advanced countermeasures against common vulnerabilities, offering a modern alternative with particular focus on memory security and resistance to sophisticated attacks.
 
-### Key Features v2.8
+### Key Features v2.7
 - **Secure upload** of files to the server
 - **Secure download** of files from the server
 - **Remote listing** to view available files
-- **Proxy Support** for SOCKS4, SOCKS5 and HTTP
+- **Proxy Support** for SOCKS4, SOCKS5 and HTTP proxies
 - **Automatic resume** of interrupted transfers
 - **End-to-end encryption** with AES-256-GCM and ECDH (X25519)
 - **Digital signatures** with Ed25519 for authentication
 - **Authenticated packet headers** to prevent tampering
+- **Replay bypass protection** with sequence number tracking
+- **Zombie file protection** with automatic corruption cleanup
 
 ## ✨ Key Features
 
@@ -280,15 +283,25 @@ nohup python3 sft.py --mode server \
 ### Client Operations
 
 #### Proxy Support
-The client supports connecting to the server through a SOCKS4, SOCKS5 or HTTP proxy.
-The following arguments can be used to configure the proxy:
-- `--proxy-type`: The proxy type (socks4, socks5, http)
-- `--proxy-host`: The proxy host
-- `--proxy-port`: The proxy port
-- `--proxy-user`: The proxy username
-- `--proxy-pass`: The proxy password
 
-Example:
+The client supports connecting to the server through SOCKS4, SOCKS5, or HTTP proxies for enhanced privacy and network traversal capabilities.
+
+**SECURITY WARNING**: Proxy credentials are passed as command-line arguments, which may be visible in process listings and shell history on shared systems. Recommendations:
+- Use unauthenticated local proxies when possible
+- Employ environment isolation (containers, VMs) when using credentials
+- Clear shell history after use on multi-user systems
+- Avoid hardcoding credentials in scripts
+
+**Proxy Configuration Arguments**:
+- `--proxy-type`: Proxy protocol (choices: socks4, socks5, http)
+- `--proxy-host`: Proxy server hostname or IP address
+- `--proxy-port`: Proxy server port (1-65535)
+- `--proxy-user`: (Optional) Proxy authentication username (max 255 chars)
+- `--proxy-pass`: (Optional) Proxy authentication password (max 255 chars)
+
+**Input Validation**: All proxy parameters are strictly validated to prevent injection attacks. Null bytes and excessive lengths are rejected.
+
+**Example - Unauthenticated SOCKS5 proxy**:
 ```bash
 python3 sft.py --mode client \
     --connect server.example.com:5555 \
@@ -297,6 +310,35 @@ python3 sft.py --mode client \
     --proxy-host 127.0.0.1 \
     --proxy-port 1080
 ```
+
+**Example - Authenticated proxy**:
+```bash
+python3 sft.py --mode client \
+    --connect server.example.com:5555 \
+    --file large_file.zip \
+    --proxy-type socks5 \
+    --proxy-host 127.0.0.1 \
+    --proxy-port 1080 \
+    --proxy-user myuser \
+    --proxy-pass mypassword
+```
+
+**Example - HTTP proxy for corporate networks**:
+```bash
+python3 sft.py --mode client \
+    --connect server.example.com:5555 \
+    --download important.pdf \
+    --proxy-type http \
+    --proxy-host proxy.corporate.local \
+    --proxy-port 8080
+```
+
+**Proxy Requirements**:
+- SOCKS4: Basic TCP tunneling (no DNS resolution, no auth in most implementations)
+- SOCKS5: Full TCP/UDP support, DNS resolution, optional authentication
+- HTTP: CONNECT method support required for HTTPS-like tunneling
+
+**Note**: When using a proxy, the client validates hostname format but delegates DNS resolution to the proxy server. Ensure the proxy is trusted to prevent DNS-based attacks.
 
 #### Upload File
 ```bash
@@ -461,11 +503,12 @@ SFT/
 │   ├── test_dos_mitigation.py
 │   ├── test_concurrency.py
 │   ├── test_unit_sft.py
+│   ├── test_proxy.py              # Proxy functionality tests
 │   ├── test_p0_security.py        # Priority 0 security tests
 │   ├── test_p1_robustness.py      # Priority 1 robustness tests
 │   ├── test_p2_completeness.py    # Priority 2 completeness tests
 │   └── test_p2_unit_completeness.py
-├── received/                       # Output directory (created at runtime)
+├── ricevuti/                       # Output directory (created at runtime)
 └── README.md                       # This file
 ```
 
@@ -530,13 +573,16 @@ DEBUG=1 python3 sft.py --mode server --debug
 - [x] DoS resistance improvements (RSA exhaustion mitigation)
 - [x] Information leak prevention and side-channel protections
 - [x] Enhanced path traversal validation
+- [x] Replay bypass mitigation (sequence number tracking with sliding window)
+- [x] Zombie file protection (automatic removal of corrupted files after hash verification failure)
+- [x] SOCKS4/SOCKS5/HTTP proxy support for client connections
 - [ ] Linux installer script (install.sh)
 
 ### Version 2.8 📋
 - [ ] Fingerprint/passphrase authentication to mitigate MitM attacks
-- [x] Replay bypass mitigation (sequence number tracking with sliding window)
-- [x] Zombie file protection (automatic removal of corrupted files after hash verification failure)
 - [ ] File descriptor leak prevention (server crash without closing file handles)
+- [ ] Connection rate limiting per IP with exponential backoff
+- [ ] Automatic log rotation and compression
 
 ### Version 3.0 📋
 - [ ] GUI with PyQt6

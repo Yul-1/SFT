@@ -1150,15 +1150,27 @@ class SecureFileTransferNode:
             raise
 
     def _create_socket(self) -> socket.socket:
-        """Creates a socket, applying proxy settings if available."""
+        """Creates a socket with proxy configuration if provided"""
         if not self.proxy_info or not self.proxy_info.get("type"):
             return socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 
         proxy_type_str = self.proxy_info["type"].lower()
-        proxy_host = self.proxy_info["host"]
-        proxy_port = self.proxy_info["port"]
+        proxy_host = self.proxy_info.get("host")
+        proxy_port = self.proxy_info.get("port")
         proxy_user = self.proxy_info.get("user")
         proxy_pass = self.proxy_info.get("pass")
+
+        if not proxy_host or proxy_port is None:
+            raise ValueError("Proxy configuration requires both host and port")
+
+        if not isinstance(proxy_port, int) or proxy_port < 1 or proxy_port > 65535:
+            raise ValueError("Proxy port must be between 1 and 65535")
+
+        if proxy_user and ('\x00' in proxy_user or len(proxy_user) > 255):
+            raise ValueError("Invalid proxy username")
+
+        if proxy_pass and ('\x00' in proxy_pass or len(proxy_pass) > 255):
+            raise ValueError("Invalid proxy password")
 
         if proxy_type_str == "socks5":
             proxy_type = socks.SOCKS5
@@ -1169,17 +1181,24 @@ class SecureFileTransferNode:
         else:
             raise ValueError(f"Unsupported proxy type: {proxy_type_str}")
 
-        logger.info(f"Creating SOCKS {proxy_type_str} socket via {proxy_host}:{proxy_port}")
-        
-        s = socks.socksocket()
-        s.set_proxy(
-            proxy_type,
-            proxy_host,
-            proxy_port,
-            username=proxy_user,
-            password=proxy_pass
-        )
-        return s
+        logger.info(f"Establishing connection via {proxy_type_str.upper()} proxy")
+
+        try:
+            s = socks.socksocket()
+            s.set_proxy(
+                proxy_type,
+                proxy_host,
+                proxy_port,
+                username=proxy_user,
+                password=proxy_pass
+            )
+            return s
+        except (socks.ProxyError, socks.GeneralProxyError, socks.ProxyConnectionError) as e:
+            logger.error(f"Proxy configuration failed: {str(e)}")
+            raise ConnectionError(f"Proxy initialization failed: {str(e)}")
+        except Exception as e:
+            logger.error(f"Unexpected error during proxy setup: {str(e)}")
+            raise
 
     def _internal_send_file_logic( 
         self, 
@@ -1586,16 +1605,18 @@ def main():
                 return
 
             try:
-                # If using a proxy, we don't resolve the target host locally
+                ipaddress.ip_address(server_host)
+            except ValueError:
+                if not re.match(r'^[a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?)*$', server_host):
+                    print(f"[ERROR] Invalid hostname format: {server_host}")
+                    return
+
                 if not proxy_info:
-                    socket.gethostbyname(server_host)
-                try:
-                    ipaddress.ip_address(server_host)
-                except ValueError:
-                    pass
-            except socket.gaierror:
-                print(f"[ERROR] Cannot resolve host: {server_host}")
-                return
+                    try:
+                        socket.gethostbyname(server_host)
+                    except socket.gaierror:
+                        print(f"[ERROR] Cannot resolve host: {server_host}")
+                        return
 
             local_save_path_for_download: Optional[Path] = None
             temp_download_path: Optional[Path] = None
