@@ -6,6 +6,7 @@ __pycache__/
 
 # Virtual environment
 venv/
+.venv/
 *.env
 
 # Log e file di output
@@ -19,3 +20,8 @@ crypto_accelerator.so
 tests/*.pcapng
 tests/*.csv
 tests/*.txt
+
+# Rust artifacts
+target/
+Cargo.lock
+*.rs.bk
