@@ -14,7 +14,7 @@
 #define MyAppPublisher "SFT Contributors"
 #define MyAppURL "https://github.com/yourusername/SFT"
 #define MyAppExeName "sft.bat"
-#define PythonVersion "3.11.9"
+#define PythonVersion "3.13.1"
 
 [Setup]
 ; Application metadata
@@ -88,7 +88,7 @@ Source: "..\installer\python-embedded\*"; DestDir: "{app}\python"; Components: p
 
 ; ===== Rust Crypto Module =====
 ; Pre-compiled .pyd file (built with maturin)
-Source: "..\target\wheels\crypto_accelerator.cp311-win_amd64.pyd"; DestDir: "{app}\python\Lib\site-packages"; Components: rustmodule; Flags: ignoreversion
+Source: "..\target\wheels\crypto_accelerator.cp313-win_amd64.pyd"; DestDir: "{app}\python\Lib\site-packages"; Components: rustmodule; Flags: ignoreversion
 
 ; ===== SFT Application Files =====
 Source: "..\sft.py"; DestDir: "{app}"; Components: core; Flags: ignoreversion

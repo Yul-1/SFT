@@ -19,7 +19,7 @@ param(
 $ErrorActionPreference = "Stop"
 
 # Configuration
-$PYTHON_VERSION = "3.11.9"
+$PYTHON_VERSION = "3.13.1"
 $PYTHON_EMBED_URL = "https://www.python.org/ftp/python/$PYTHON_VERSION/python-$PYTHON_VERSION-embed-amd64.zip"
 $VCREDIST_URL = "https://aka.ms/vs/17/release/vc_redist.x64.exe"
 $INNO_SETUP_PATH = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
